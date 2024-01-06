@@ -17,21 +17,21 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   FORWARD_LIMIT  = 0.2,        -- Maximum head deviation from front-back G-forces (meters). Also adds some nonlinear spring.
   FORWARD_FREQUENCY = 1.0,     -- Resonance frequency (Hz); lower for more smoothing
   FORWARD_DAMPING   = 1,       -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
-  FORWARD_RECENTER_TIME = 4,   -- Time scale for recentering after a change in acceleration. 0 to disable recentering
+  FORWARD_RECENTER_TIME = 2,   -- Time scale for recentering after a change in acceleration. 0 to disable recentering
 
   -- Left-right motion (Roxbury axis)
   HORIZONTAL_SCALE  = 1,
   HORIZONTAL_LIMIT  = 0.05,
   HORIZONTAL_FREQUENCY = 1.0,
   HORIZONTAL_DAMPING   = 1,
-  HORIZONTAL_RECENTER_TIME = 4,
+  HORIZONTAL_RECENTER_TIME = 2,
 
   -- Vertical motion (Bobblehead axis)
   VERTICAL_SCALE = 1,
   VERTICAL_LIMIT = 0.04,
   VERTICAL_FREQUENCY = 1.0,
   VERTICAL_DAMPING = 1,
-  VERTICAL_RECENTER_TIME = 4,
+  VERTICAL_RECENTER_TIME = 2,
 
   -- Head tilting forward
   PITCH_SCALE     = 1,       -- Level of car pitch tracking: 1 to follow car, 0 to follow horizon
@@ -44,8 +44,9 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   ROLL_DAMPING   = 1,
 
   -- Let's the car turn under your head to kill yaw wobbles (yawbbles). Takes some getting used to!
-  YAW_SCALE         = 0.03, -- Basically how far the car can turn under your head for a given rotation speed, and the maximum wobble you can eliminate.
-  YAW_RECENTER_TIME = 2,    -- How long (s) for your eyesight to realign during a long turn. You will filter wobbles having shorter periods than this.
+  YAW_SCALE     = 0.03, -- How far the car turns under your head for a given rotation speed, and the maximum wobble amplitude you can eliminate.
+  YAW_FREQUENCY = 0.5,    -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
+  YAW_DAMPING   = 1,
 })
 
 
@@ -200,7 +201,7 @@ local head = {
   z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
   pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     ),
   roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      ),
-  yaw   = 0
+  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       ),
 }
 
 
@@ -286,7 +287,7 @@ end
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
 function script.update(dt, mode, turnMix)
-
+  
   -- IDEAS
     -- car.isInPit true when the car is physically in the pitbox
     -- car.isActive at least true when on track
@@ -335,7 +336,7 @@ function script.update(dt, mode, turnMix)
     head.pitch:reset()
     head.roll :reset()
     head.roll.value = dot(car_side_no_roll, car.up)
-    head.yaw = 0
+    head.yaw:reset()
 
     -- IMPORTANT: Set the head's current displacement from car center, world coordinates
     --pw = neck.position - car.position
@@ -350,7 +351,6 @@ function script.update(dt, mode, turnMix)
       temp = get_eye_pitch()
       if type(temp) == 'number' then eye_pitch = temp end
       last_check = os.clock()
-      ac.debug('eye_pitch', eye_pitch)
     end
 
     -- reset the neck alignment with the car
@@ -372,19 +372,18 @@ function script.update(dt, mode, turnMix)
   -- Reduce yaw wobble (yawbble), which occurs as tires grip in and out, which makes me sick in VR
   if settings.YAW_ENABLED == 1 then
 
-    -- Calculate the angular velocity, and high-pass that, so we are sensitive only to 
-    -- transients in angular velocity. This will tend to zero in a constant speed turn.
-    -- Note we go through the /dt process so that variable frame rate has a smoother evolution.
-    -- Then accumulate rotation of the head away from the car by this value.
-    head.yaw = head.yaw + transient.yaw:evolve(dt, -car.angularVelocity.y) * dt
-
-    -- Exponentially decay the yaw to zero
-    head.yaw = head.yaw*(1-dt/settings.YAW_RECENTER_TIME)
-
+      -- High-pass the angular velocity so that we are sensitive only to transients. 
+    -- Add this to the existing yaw, such that a given angular velocity produces
+    -- a fixed yaw. Note we go through the /dt process so that variable frame rate 
+    -- has a smoother evolution.
+    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, -car.angularVelocity.y) * dt
+    
+    -- Now have the head yaw spring try to keep up
+    head.yaw:evolve_target(dt, 0)
+    
     -- Now add this perpendicularly to the car look to get the head location
-    neck.look.x = neck.look.x - head.yaw*car_side_no_roll.x
-    neck.look.z = neck.look.z - head.yaw*car_side_no_roll.z
-
+    neck.look.x = neck.look.x - head.yaw.value*car_side_no_roll.x
+    neck.look.z = neck.look.z - head.yaw.value*car_side_no_roll.z
   end
 
   -- To figure out the roll angle about the car's look axis, we need to dot the up vector with an 
