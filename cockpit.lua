@@ -55,6 +55,15 @@ local settings = scriptSettings:mapSection('SETTINGS', {
 local pi = 3.1415926535
 local pi24 = 4*pi*pi
 
+-- Soft clipping function to place bounds on any value
+--  value is the input value, and the return value will
+--  be bounded between +/-max
+function soft_clip(value, max)
+  -- return value*max/(1+math.abs(value))
+  if value >  2*max then return  max end
+  if value < -2*max then return -max end
+  return value - value*math.abs(value)/(4*max)
+end
 
 -- Object to hold and evolve a dynamical variable with a spring and damper
 FilterSpring = {
@@ -107,23 +116,26 @@ end
 function FilterSpring:evolve_acceleration(dt, a)
 
   -- The target in this case is always zero.
-  self.target = 0
 
   -- Get the deviation from the target
-  local dx = self.value - self.target
   local v  = self.velocity
   local f  = self.frequency
   local g  = self.damping
-  local l  = 0
 
   -- Update the velocity from the acceleration (damping and spring)
-  if l > 0 then
-    self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*dx*(1+dx*dx/(l*l)))*dt
-  else
-    self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*dx)*dt
-  end
-  -- Update the position with this velocity
-  self.value = self.value + self.velocity*dt
+  self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*self.value)*dt
+
+  -- Update the position with this velocity, and soft-clip it
+  local start_value = self.value
+  self.value = soft_clip(self.value + self.velocity*dt, self.limit)
+
+  -- If the velocity is in the same direction as dx, rescale the actual velocity
+  -- to the actual value had as a result of soft-clipping.
+  -- We check direction to avoid getting stuck at the end of the travel.
+  -- Actually let's try it without this asymmetry
+  --if self.value*self.velocity > 0 then
+  self.velocity = (self.value-start_value)/dt
+  --end
 
   -- May as well return it
   return self.value
@@ -183,15 +195,7 @@ function FilterHighPass:reset()
 end
 
 
--- Soft clipping function to place bounds on any value
---  value is the input value, and the return value will
---  be bounded between +/-max
-function soft_clip(value, max)
-  -- return value*max/(1+math.abs(value))
-  if value >  2*max then return  max end
-  if value < -2*max then return -max end
-  return value - value*math.abs(value)/(4*max)
-end
+
 
 
 -- Dynamical variables for head position
@@ -432,9 +436,9 @@ function script.update(dt, mode, turnMix)
   p0w = car.driverEyesPosition.x*car.side + car.driverEyesPosition.y*car.up + car.driverEyesPosition.z*car.look + car.position
 
   -- Convert the dynamical neck displacments into world coordinates
-  pw = - soft_clip(head.x.value, settings.HORIZONTAL_LIMIT)*car.side
-       - soft_clip(head.y.value, settings.VERTICAL_LIMIT  )*car.up
-       - soft_clip(head.z.value, settings.FORWARD_LIMIT   )*car.look
+  pw = - head.x.value*car.side
+       - head.y.value*car.up
+       - head.z.value*car.look
 
   -- Get the new neck position
   neck.position = p0w + pw
