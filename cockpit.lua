@@ -18,6 +18,7 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   FORWARD_FREQUENCY = 1.0,     -- Resonance frequency (Hz); lower for more smoothing
   FORWARD_DAMPING   = 1,       -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
   FORWARD_RECENTER_TIME = 2,   -- Time scale for recentering after a change in acceleration. 0 to disable recentering
+  FORWARD_PITCH_PIVOT = 0.25,  -- Distance (m) between head and effective pivot point (somewhere in your chest or waist), which links displacement to rotation. Set to 0 to disable
 
   -- Left-right motion (Roxbury axis)
   HORIZONTAL_SCALE  = 1,
@@ -25,6 +26,8 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   HORIZONTAL_FREQUENCY = 1.0,
   HORIZONTAL_DAMPING   = 1,
   HORIZONTAL_RECENTER_TIME = 2,
+  HORIZONTAL_ROLL_PIVOT = 0.25, -- Same as FORWARD_PITCH_PIVOT but head tilting
+  HORIZONTAL_YAW_PIVOT  = 10,   -- Locks eyes this distance ahead of the car when shifting
 
   -- Vertical motion (Bobblehead axis)
   VERTICAL_SCALE = 1,
@@ -310,40 +313,8 @@ function script.update(dt, mode, turnMix)
     transient.x:reset()
     transient.y:reset()
     transient.z:reset()
-  end
 
-
-  -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
-  -- for the orientation of the car and neck (matched to each other at the start of this 
-  -- update function).
-
-  -- Pitch dynamics
-  if settings.PITCH_ENABLED == 1 then
-    -- 1. High-pass the angular velocity so that we are sensitive only to transients. 
-    --    Add this to the existing pitch difference between the neck and car, such 
-    --    that a given angular velocity produces a fixed offset value. Note we go through 
-    --    the /dt process so that variable frame rate has a smoother evolution.
-    -- 2. Let the head try to relax back to center by harmonic motion.
-    -- 3. Do the rotation about the appropriate axis.
-    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dot(car.angularVelocity, car.side)) * dt
-    head.pitch:evolve_target(dt,0)
-    neck.look = small_rotation(neck.look, car.side, -head.pitch.value)
-  end
-
-  -- Yaw dynamics
-  if settings.YAW_ENABLED == 1 then
-    -- Same as for pitch
-    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dot(car.angularVelocity, car.up)) * dt
-    head.yaw:evolve_target(dt, 0)
-    neck.look = small_rotation(neck.look, car.up, -head.yaw.value)
-  end
-
-  -- Roll dynamics
-  if settings.ROLL_ENABLED == 1 then
-    -- Same as for pitch
-    head.roll.value = head.roll.value + transient.roll:evolve(dt, dot(car.angularVelocity, car.look)) * dt
-    head.roll:evolve_target(dt, 0)
-    neck.up = small_rotation(neck.up, car.look, -head.roll.value)
+    return
   end
 
   -- Displacement physics
@@ -370,6 +341,71 @@ function script.update(dt, mode, turnMix)
     head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
     neck.position = neck.position - head.z.value*car.look
   end
+
+  -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
+  -- for the orientation of the car and neck (matched to each other at the start of this 
+  -- update function).
+
+  -- The angles
+  local pitch = 0
+  local roll  = 0
+  local yaw   = 0
+
+  -- Pitch dynamics
+  if settings.PITCH_ENABLED == 1 then
+    -- 1. High-pass the angular velocity so that we are sensitive only to transients. 
+    --    Add this to the existing pitch difference between the neck and car, such 
+    --    that a given angular velocity produces a fixed offset value. Note we go through 
+    --    the /dt process so that variable frame rate has a smoother evolution.
+    -- 2. Let the head try to relax back to center by harmonic motion.
+    -- 3. Do the rotation about the appropriate axis.
+    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dot(car.angularVelocity, car.side)) * dt
+    head.pitch:evolve_target(dt,0)
+    pitch = -head.pitch.value
+  end
+
+  -- Yaw dynamics
+  if settings.YAW_ENABLED == 1 then
+    -- Same as for pitch
+    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dot(car.angularVelocity, car.up)) * dt
+    head.yaw:evolve_target(dt, 0)
+    yaw = -head.yaw.value
+  end
+
+  -- Roll dynamics
+  if settings.ROLL_ENABLED == 1 then
+    -- Same as for pitch
+    head.roll.value = head.roll.value + transient.roll:evolve(dt, dot(car.angularVelocity, car.look)) * dt
+    head.roll:evolve_target(dt, 0)
+    roll = -head.roll.value
+  end
+
+  -- Extra rotations from pivots
+  if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
+  if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
+  if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
+
+  -- Do the rotations
+  neck.look = small_rotation(neck.look, car.side, pitch)
+  neck.up   = small_rotation(neck.up  , car.side, pitch)
+  neck.look = small_rotation(neck.look, car.up  , yaw  )
+  neck.side = small_rotation(neck.side, car.up  , yaw  )
+  neck.up   = small_rotation(neck.up  , car.look, roll )
+  neck.side = small_rotation(neck.side, car.look, roll )
+
+
+  -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
+  -- So the small rotation approximation is good
+  --ac.debug('look.length', neck.look:length())
+  --ac.debug('up.length', neck.up:length())
+  --ac.debug('side.length', neck.side:length())
+
+  -- These tests showed that normal driving lead to <1% overlap between these basis vectors.
+  -- In a crash, these things can be like 0.2, which is consistent with few percent in length errors,
+  -- which are second order (overlap is first order)
+  -- ac.debug('look-up overlap',   dot(neck.look, neck.up))
+  -- ac.debug('look-side overlap', dot(neck.look, neck.side))
+  -- ac.debug('side-up overlap',   dot(neck.side, neck.up))
 
 end
 
