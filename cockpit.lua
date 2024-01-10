@@ -188,6 +188,7 @@ function FilterHighPass:evolve(dt, input)
 
   return self.value
 end
+
 -- Resets the variables
 function FilterHighPass:reset()
   self.value          = 0
@@ -214,31 +215,21 @@ local transient = {
   x     = FilterHighPass:new(settings.HORIZONTAL_RECENTER_TIME),
   y     = FilterHighPass:new(settings.VERTICAL_RECENTER_TIME),
   z     = FilterHighPass:new(settings.FORWARD_RECENTER_TIME),
+  pitch = FilterHighPass:new(settings.PITCH_SCALE),
+  roll  = FilterHighPass:new(settings.ROLL_SCALE),
   yaw   = FilterHighPass:new(settings.YAW_SCALE),
 }
 
--- starting and current head position relative to car
-local p0w = vec3(0,0,0) -- Starting head position in world coordinates (calcualted / updated every update)
-local pw  = vec3(0,0,0) -- Current head position in car coordinates (caluculate / updated every update)
-local eye_pitch = 0     -- Pitch zero value
-
-
--- Car's side and up vector without any roll around look
-local car_side_no_roll = vec3(1,0,0)
-local car_up_no_roll   = vec3(0,1,0)
-
--- Precomputed scale factors
+-- Precomputed scale factors (doesn't save much time but oh well)
 local horizontal_scale = settings.HORIZONTAL_SCALE*settings.POSITION_SCALE
 local vertical_scale   = settings.VERTICAL_SCALE  *settings.POSITION_SCALE
 local forward_scale    = settings.FORWARD_SCALE   *settings.POSITION_SCALE
-
--- multipurpose
-local temp = 0
 
 -- For parsing lines like SETTING=THING
 function split_and_strip(input, delimiter)
   local result = {}
 
+  -- Loop over the tokens using this archaic bullshit string parsing.
   for token in input:gmatch("([^" .. delimiter .. "]+)") do
       -- Strip leading and trailing whitespaces from each token
       local strippedToken = token:match("^%s*(.-)%s*$")
@@ -248,200 +239,137 @@ function split_and_strip(input, delimiter)
   return result
 end
 
--- To get the eye pitch setting we look at a file
-local path_view = os.getenv('HOMEPATH') .. '\\Documents\\Assetto Corsa\\cfg\\cars\\' .. ac.getCarID() .. '\\view.ini'
-local last_check = os.clock()
-function get_eye_pitch()
-  
-  -- Used by line loop
-  local result
+-- Save some of this in case we want to save our own settings later.
+-- local path_view = os.getenv('HOMEPATH') .. '\\Documents\\Assetto Corsa\\cfg\\cars\\' .. ac.getCarID() .. '\\view.ini'
+-- local last_check = os.clock()
+-- function get_eye_pitch()
 
-  -- Open the file in read mode
-  local file = io.open(path_view, "r")
+--   -- Used by line loop
+--   local result
 
-  -- Check if the file was opened successfully
-  if file then
+--   -- Open the file in read mode
+--   local file = io.open(path_view, "r")
 
-      -- Iterate over each line in the file
-      for line in file:lines() do
+--   -- Check if the file was opened successfully
+--   if file then
 
-        -- if the line is interesting, look for the pitch angle
-        if string.len(line) > 0 then
+--       -- Iterate over each line in the file
+--       for line in file:lines() do
 
-            -- Get the key-value pair
-            result = split_and_strip(line, '=')
+--         -- if the line is interesting, look for the pitch angle
+--         if string.len(line) > 0 then
 
-            -- Check for the key we care about.
-            if string.match(result[1], 'ON_BOARD_PITCH_ANGLE') then 
-              file:close()
-              return tonumber(result[2])
-            end
-          end
-      end
+--             -- Get the key-value pair
+--             result = split_and_strip(line, '=')
 
-      -- Close the file when done
-      file:close()
-      return true
-  else
-      return false
-  end
+--             -- Check for the key we care about.
+--             if string.match(result[1], 'ON_BOARD_PITCH_ANGLE') then 
+--               file:close()
+--               return tonumber(result[2])
+--             end
+--           end
+--       end
 
+--       -- Close the file when done
+--       file:close()
+--       return true
+--   else
+--       return false
+--   end
+
+-- end
+
+-- Does an infinitesimal / approximate rotation of unit vector (v) about the 
+-- supplied axis unit vector (a) by a distance (d << pi)
+function small_rotation(v, a, d)
+  return v + d*cross(a,v)
+end
+
+-- Safely normalizes, making sure it's not dividing by zero.
+function safe_normalize(v)
+  if v:lengthSquared() < 1e-20 then v = v+vec3(1e-10,0,0) end
+  return v:normalize()
 end
 
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
 function script.update(dt, mode, turnMix)
-  
-  -- IDEAS
-    -- car.isInPit true when the car is physically in the pitbox
-    -- car.isActive at least true when on track
-    -- car.isUserControlled
 
-  -- The only variable I can work with is neck.position, the 
-  -- absolute position on the map. Even subtracting car.position
-  -- doesn't give a constant vector as the car rotates, 
-  -- meaning we gotta do some dot products.
-
-  -- Get some vectors used by yaw and roll
-  if settings.ROLL_ENABLED == 1 or settings.YAW_ENABLED == 1 then
-
-    -- Vector pointing perpendicular to the car's forward direction in the xz plane
-    -- Could reduce computation here by using only car.look.x and car.look.z, but this will be minimal compared
-    -- to normalizing / square roots
-    car_side_no_roll = cross(car.look, vec3(0,1,0))
-
-    -- This could be zero length if the car is pointing straight up, so check for that before normalizing
-    if car_side_no_roll:lengthSquared() < 1e-20 then car_side_no_roll = car_side_no_roll + vec3(1e-10,0,0) end
-
-    -- normalize it so the length isn't changing during dynamics
-    car_side_no_roll = car_side_no_roll:normalize()
-
-    -- normalized up vector in the absence of roll for the other roll component
-    car_up_no_roll = cross(car_side_no_roll, car.look):normalize()
-
-  end
-
-  -- If we're stopped, just store the values and quit
-  -- We make a manual copy here to avoid referencing by address issues
-  if  car.velocity.x^2 + car.velocity.y^2 + car.velocity.z^2 < 1e-20
-  and head.x.value^2   + head.y.value^2   + head.z.value^2   < 1e-10
-  or car.justJumped then
-
-    -- Reset the transient filters
-    transient.x:reset()
-    transient.y:reset()
-    transient.z:reset()
-    transient.yaw:reset()
-
-    -- Reset the head response filters
+  -- If we just jumped to a new location or we're going slow, reset stuff
+  if car.justJumped or car.speedMs < 0.001 then
+    head.pitch:reset()
+    head.roll:reset()
+    head.yaw:reset()
     head.x:reset()
     head.y:reset()
     head.z:reset()
-    head.pitch:reset()
-    head.roll :reset()
-    head.roll.value = dot(car_side_no_roll, car.up)
-    head.yaw:reset()
 
-    -- IMPORTANT: Set the head's current displacement from car center, world coordinates
-    --pw = neck.position - car.position
-
-    -- Set the "zero" displacement in car coordinates
-    --p0.x = dot(pw, car.side)
-    --p0.y = dot(pw, car.up  )
-    --p0.z = dot(pw, car.look)
-
-    -- Every quarter second open the ini file to check the eye pitch
-    if os.clock() - last_check > 0.25 then 
-      temp = get_eye_pitch()
-      if type(temp) == 'number' then eye_pitch = temp end
-      last_check = os.clock()
-    end
-
-    -- reset the neck alignment with the car
-    neck.look.x = car.look.x
-    neck.look.y = car.look.y + eye_pitch
-    neck.look.z = car.look.z
-
-    return
+    transient.pitch:reset()
+    transient.roll:reset()
+    transient.yaw:reset()
+    transient.x:reset()
+    transient.y:reset()
+    transient.z:reset()
   end
 
-  ---------------------------------------------------------
-  -- Pitch, yaw, and roll
 
-  -- Get the vertical (y) component of the car.look variable to 
-  -- find the desired equilibrium, and plug this into the 
-  -- harmonic oscillator for rotation
-  if settings.PITCH_ENABLED == 1 then neck.look.y = eye_pitch + settings.PITCH_SCALE*head.pitch:evolve_target(dt, car.look.y) end
+  -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
+  -- for the orientation of the car and neck (matched to each other at the start of this 
+  -- update function).
 
-  -- Reduce yaw wobble (yawbble), which occurs as tires grip in and out, which makes me sick in VR
+  -- Pitch dynamics
+  if settings.PITCH_ENABLED == 1 then
+    -- 1. High-pass the angular velocity so that we are sensitive only to transients. 
+    --    Add this to the existing pitch difference between the neck and car, such 
+    --    that a given angular velocity produces a fixed offset value. Note we go through 
+    --    the /dt process so that variable frame rate has a smoother evolution.
+    -- 2. Let the head try to relax back to center by harmonic motion.
+    -- 3. Do the rotation about the appropriate axis.
+    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dot(car.angularVelocity, car.side)) * dt
+    head.pitch:evolve_target(dt,0)
+    neck.look = small_rotation(neck.look, car.side, -head.pitch.value)
+  end
+
+  -- Yaw dynamics
   if settings.YAW_ENABLED == 1 then
-
-      -- High-pass the angular velocity so that we are sensitive only to transients. 
-    -- Add this to the existing yaw, such that a given angular velocity produces
-    -- a fixed yaw. Note we go through the /dt process so that variable frame rate 
-    -- has a smoother evolution.
-    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, -car.angularVelocity.y) * dt
-    
-    -- Now have the head yaw spring try to keep up
+    -- Same as for pitch
+    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dot(car.angularVelocity, car.up)) * dt
     head.yaw:evolve_target(dt, 0)
-    
-    -- Now add this perpendicularly to the car look to get the head location
-    neck.look.x = neck.look.x - head.yaw.value*car_side_no_roll.x
-    neck.look.z = neck.look.z - head.yaw.value*car_side_no_roll.z
+    neck.look = small_rotation(neck.look, car.up, -head.yaw.value)
   end
 
-  -- To figure out the roll angle about the car's look axis, we need to dot the up vector with an 
-  -- in-plane (no roll) side vector.
+  -- Roll dynamics
   if settings.ROLL_ENABLED == 1 then
-
-    -- The head roll component is then the (lagging) dot product with car_side_no_roll
-    head.roll:evolve_target(dt, dot(car_side_no_roll, car.up))
-
-    -- Now reconstruct the head's (lagging) up vector
-    temp = head.roll.value*settings.ROLL_SCALE -- side value
-    neck.up = car_side_no_roll*temp + car_up_no_roll*math.sqrt(1-temp*temp)
-
-  else
-    neck.up = vec3(car.up.x, car.up.y, car.up.z) -- make a copy
+    -- Same as for pitch
+    head.roll.value = head.roll.value + transient.roll:evolve(dt, dot(car.angularVelocity, car.look)) * dt
+    head.roll:evolve_target(dt, 0)
+    neck.up = small_rotation(neck.up, car.look, -head.roll.value)
   end
 
-  --------------------------------------------------------
-  -- car.acceleration and displacement
-    -- x: leftward relative to car.look
-    -- y: vertical
-    -- z: along car.look
-    -- Magnitude generally ~1
-
-  -- High-pass filter the car acceleration to get transients
+  -- Displacement physics
+  -- 
+  -- For each of these, high-pass filter the car acceleration to get transients,
+  -- then evolve the position under this acceleration and displace the head.
+  --
+  -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
+  --  x = car.side
+  --  y = car.up
+  --  z = car.look
   if settings.HORIZONTAL_ENABLED == 1 then
     transient.x:evolve(dt, car.acceleration.x)
     head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
-  else
-    head.x.value = 0
+    neck.position = neck.position - head.x.value*car.side
   end
   if settings.VERTICAL_ENABLED == 1 then
     transient.y:evolve(dt, car.acceleration.y)
     head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
-  else
-    head.y.value = 0
+    neck.position = neck.position - head.y.value*car.up
   end
   if settings.FORWARD_ENABLED == 1 then
     transient.z:evolve(dt, car.acceleration.z)
     head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
-  else
-    head.z.value = 0
+    neck.position = neck.position - head.z.value*car.look
   end
-
-  -- Equilbrium head displacement from car in world coordinates
-  p0w = car.driverEyesPosition.x*car.side + car.driverEyesPosition.y*car.up + car.driverEyesPosition.z*car.look + car.position
-
-  -- Convert the dynamical neck displacments into world coordinates
-  pw = - head.x.value*car.side
-       - head.y.value*car.up
-       - head.z.value*car.look
-
-  -- Get the new neck position
-  neck.position = p0w + pw
 
 end
 
