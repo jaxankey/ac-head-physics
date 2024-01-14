@@ -1,6 +1,9 @@
 local scriptSettings = ac.INIConfig.scriptSettings()
 local settings = scriptSettings:mapSection('SETTINGS', {
 
+  GLOBAL_FREQUENCY_SCALE = 1,
+  GLOBAL_DAMPING_SCALE   = 1,
+
   -- Set to zero to disable, 1 to enable
   HORIZONTAL_ENABLED = 1,
   VERTICAL_ENABLED   = 1,
@@ -40,16 +43,19 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   PITCH_SCALE     = 1,       -- Level of car pitch tracking: 1 to follow car, 0 to follow horizon
   PITCH_FREQUENCY = 3,
   PITCH_DAMPING   = 1,
+  PITCH_LIMIT     = 30,   -- degrees
 
   -- Head rolling with car
   ROLL_SCALE     = 1,       -- Level of car roll tracking:  1 to follow car, 0 to follow horizon
   ROLL_FREQUENCY = 3,
   ROLL_DAMPING   = 1,
+  ROLL_LIMIT     = 40,      -- degrees
 
   -- Let's the car turn under your head to kill yaw wobbles (yawbbles). Takes some getting used to!
-  YAW_SCALE     = 0.03, -- How far the car turns under your head for a given rotation speed, and the maximum wobble amplitude you can eliminate.
+  YAW_SCALE     = 0.03,   -- How far the car turns under your head for a given rotation speed, and the maximum wobble amplitude you can eliminate.
   YAW_FREQUENCY = 0.5,    -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
   YAW_DAMPING   = 1,
+  YAW_LIMIT     = 10,     -- degrees
 })
 
 
@@ -61,12 +67,35 @@ local pi24 = 4*pi*pi
 -- Soft clipping function to place bounds on any value
 --  value is the input value, and the return value will
 --  be bounded between +/-max
-function soft_clip(value, max)
+function soft_clip_less_linear(value, max)
   -- return value*max/(1+math.abs(value))
   if value >  2*max then return  max end
   if value < -2*max then return -max end
   return value - value*math.abs(value)/(4*max)
 end
+
+-- Soft clip function that is exactly linear up to half the max value.
+-- Then parabolic to the max value (at x=1.5*ymax)
+function soft_clip(value, max)
+
+  -- The location of the input value where the parabola peaks
+  local xmax = 1.5*max
+
+  -- Beyond these limits return a constant  
+  if value >  xmax then return  max end
+  if value < -xmax then return -max end
+
+  -- Below value = half of the max, return linear
+  if value < max*0.5 and value > -max*0.5 then return value end
+
+  -- Upper parabola smoothly limiting
+  if value >= max*0.5 then return max-(value-xmax)*(value-xmax)/(2*max) end
+
+  -- Lower parabola
+  return -max+(value+xmax)*(value+xmax)/(2*max)
+
+end
+
 
 -- Object to hold and evolve a dynamical variable with a spring and damper
 FilterSpring = {
@@ -84,8 +113,8 @@ function FilterSpring:new(frequency, damping, limit)
     local instance = setmetatable({}, { __index = FilterSpring })
 
     -- Initialization
-    instance.frequency = frequency
-    instance.damping   = damping
+    instance.frequency = frequency*settings.GLOBAL_FREQUENCY_SCALE
+    instance.damping   = damping  *settings.GLOBAL_DAMPING_SCALE
     if limit then instance.limit = limit end
 
     return instance
@@ -107,8 +136,14 @@ function FilterSpring:evolve_target(dt, target)
     -- Update the velocity from the acceleration (damping and spring)
     self.velocity = v - (4*pi*g*f*v + pi24*f*f*dx)*dt
 
-    -- Update the position with this velocity
-    self.value = self.value + self.velocity*dt
+    -- Update the position with this velocity, and soft clip it
+    local start_value = self.value
+    self.value = soft_clip(self.value + self.velocity*dt, self.limit)
+
+    -- Soft clip the velocity too as we approach the boundary
+    self.velocity = (self.value-start_value)/dt
+
+    ac.debug('limit', self.limit*180/pi)
 
     -- May as well return it
     return self.value
@@ -132,13 +167,8 @@ function FilterSpring:evolve_acceleration(dt, a)
   local start_value = self.value
   self.value = soft_clip(self.value + self.velocity*dt, self.limit)
 
-  -- If the velocity is in the same direction as dx, rescale the actual velocity
-  -- to the actual value had as a result of soft-clipping.
-  -- We check direction to avoid getting stuck at the end of the travel.
-  -- Actually let's try it without this asymmetry
-  --if self.value*self.velocity > 0 then
+  -- Soft clip the velocity too
   self.velocity = (self.value-start_value)/dt
-  --end
 
   -- May as well return it
   return self.value
@@ -207,9 +237,9 @@ local head = {
   x     = FilterSpring:new(settings.HORIZONTAL_FREQUENCY, settings.HORIZONTAL_DAMPING, settings.HORIZONTAL_LIMIT),
   y     = FilterSpring:new(settings.VERTICAL_FREQUENCY  , settings.VERTICAL_DAMPING  , settings.VERTICAL_LIMIT),
   z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
-  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     ),
-  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      ),
-  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       ),
+  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     , settings.PITCH_LIMIT*pi/180.0),
+  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      , settings.ROLL_LIMIT *pi/180.0),
+  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
 }
 
 
@@ -299,7 +329,7 @@ end
 function script.update(dt, mode, turnMix)
 
   -- If we just jumped to a new location or we're going slow, reset stuff
-  if car.justJumped or car.speedMs < 0.001 then
+  if car.justJumped or car.velocity.x*car.velocity.x+car.velocity.z+car.velocity.z < 0.01 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -314,8 +344,11 @@ function script.update(dt, mode, turnMix)
     transient.y:reset()
     transient.z:reset()
 
+    -- Jack: lock the vectors here just to be safe.
+    --ac.debug('state', 'stop')
     return
   end
+  --ac.debug('state', 'moving')
 
   -- Displacement physics
   -- 
@@ -386,6 +419,8 @@ function script.update(dt, mode, turnMix)
   if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
 
   -- Do the rotations
+  -- JACK: Do the rotations for all 3 and rotate by the angle
+  --       rather than distance to handle non-orthogonality?
   neck.look = small_rotation(neck.look, car.side, pitch)
   neck.up   = small_rotation(neck.up  , car.side, pitch)
   neck.look = small_rotation(neck.look, car.up  , yaw  )

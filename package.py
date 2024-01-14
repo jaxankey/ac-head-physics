@@ -13,7 +13,7 @@ for line in f:
 f.close()
 
 # Get the base path
-base_path = os.path.join('extension', 'lua', 'cockpit-camera', 'ac-head-physics')
+base_path = os.path.join('ac-head-physics')
 
 # Open the zip file
 zip_name = 'ac-head-physics v'+version+'.zip'
@@ -24,6 +24,9 @@ zip_file = zipfile.ZipFile(zip_name, 'w')
 for file in files: 
     print(' ', file)
     zip_file.write(file, os.path.join(base_path, file))
+
+# Installation
+zip_file.write('INSTALLATION INSTRUCTIONS.txt')
 
 # Close it.
 zip_file.close()

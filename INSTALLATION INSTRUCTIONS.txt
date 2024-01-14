@@ -1,0 +1,32 @@
+This head physics engine requires CSP v0.2.0 or later.
+
+Currently you cannot just drag this zip file onto 
+Content Manager. To install this, extract the 
+"ac-head-physics" folder into:
+
+  assettocorsa\extension\lua\cockpit-camera
+
+so that the "ac-head-physics" folder is sitting 
+next to the "default" folder. 
+
+To enable it in Content Manager, go to:
+
+  Settings -> Custom Shaders Patch -> NeckFX 
+
+then make sure "Replace original CSP behavior" is 
+"Active", and select the script "ac-head-physics" 
+(instead of "default") on the right.
+
+If you want access to all the script's settings 
+within Content Manager (note you can adjust these 
+while the game is running!), you may need to get 
+the latest untested Content Manager version in:
+
+  Settings -> Content Manager -> Testing access
+
+Please check out https://discord.me/LoPeN if you need 
+help (or if you want a friendly, inclusive, for-fun-only 
+racing environment). PLEASE DO NOT REPORT BUGS OR ASK 
+FOR HELP IN THE RACE DEPARTMENT REVIEWS. I am here to 
+help and would rather improve things for everyone, 
+thanks! :)
