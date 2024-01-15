@@ -76,23 +76,28 @@ end
 
 -- Soft clip function that is exactly linear up to half the max value.
 -- Then parabolic to the max value (at x=1.5*ymax)
-function soft_clip(value, max)
+function soft_clip(value, max, target)
+  if target == nil then target = 0 end
 
   -- The location of the input value where the parabola peaks
   local xmax = 1.5*max
 
+  -- Recentered value around the target
+  local x = value-target
+
   -- Beyond these limits return a constant  
-  if value >  xmax then return  max end
-  if value < -xmax then return -max end
+  if x >  xmax then return target+max end
+  if x < -xmax then return target-max end
 
   -- Below value = half of the max, return linear
-  if value < max*0.5 and value > -max*0.5 then return value end
+  if x < max*0.5 and x > -max*0.5 then return value end
 
   -- Upper parabola smoothly limiting
-  if value >= max*0.5 then return max-(value-xmax)*(value-xmax)/(2*max) end
-
-  -- Lower parabola
-  return -max+(value+xmax)*(value+xmax)/(2*max)
+  if x >= max*0.5 then
+    return target + max-(x-xmax)*(x-xmax)/(2*max)
+  else
+    return target - max+(x+xmax)*(x+xmax)/(2*max)
+  end
 
 end
 
@@ -138,12 +143,10 @@ function FilterSpring:evolve_target(dt, target)
 
     -- Update the position with this velocity, and soft clip it
     local start_value = self.value
-    self.value = soft_clip(self.value + self.velocity*dt, self.limit)
+    self.value = soft_clip(self.value + self.velocity*dt, self.limit, self.target)
 
     -- Soft clip the velocity too as we approach the boundary
     self.velocity = (self.value-start_value)/dt
-
-    ac.debug('limit', self.limit*180/pi)
 
     -- May as well return it
     return self.value
@@ -165,7 +168,7 @@ function FilterSpring:evolve_acceleration(dt, a)
 
   -- Update the position with this velocity, and soft-clip it
   local start_value = self.value
-  self.value = soft_clip(self.value + self.velocity*dt, self.limit)
+  self.value = soft_clip(self.value + self.velocity*dt, self.limit, self.target)
 
   -- Soft clip the velocity too
   self.velocity = (self.value-start_value)/dt
@@ -248,8 +251,6 @@ local transient = {
   x     = FilterHighPass:new(settings.HORIZONTAL_RECENTER_TIME),
   y     = FilterHighPass:new(settings.VERTICAL_RECENTER_TIME),
   z     = FilterHighPass:new(settings.FORWARD_RECENTER_TIME),
-  pitch = FilterHighPass:new(settings.PITCH_SCALE),
-  roll  = FilterHighPass:new(settings.ROLL_SCALE),
   yaw   = FilterHighPass:new(settings.YAW_SCALE),
 }
 
@@ -326,10 +327,16 @@ end
 
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
+local last_car_look = vec3(0,0,0)
 function script.update(dt, mode, turnMix)
 
+  -- The angles we will eventually add to the neck vectors
+  local pitch = 0
+  local roll  = 0
+  local yaw   = 0
+
   -- If we just jumped to a new location or we're going slow, reset stuff
-  if car.justJumped or car.velocity.x*car.velocity.x+car.velocity.z+car.velocity.z < 0.01 then
+  if car.justJumped or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -337,86 +344,93 @@ function script.update(dt, mode, turnMix)
     head.y:reset()
     head.z:reset()
 
-    transient.pitch:reset()
-    transient.roll:reset()
-    transient.yaw:reset()
     transient.x:reset()
     transient.y:reset()
     transient.z:reset()
+    transient.yaw:reset()
 
-    -- Jack: lock the vectors here just to be safe.
+    -- Align with the car
+    head.pitch.value = car.look.y
+    head.roll.value  = car.side.y
+
+    -- Set it up to do the correct rotation.
+    pitch =  car.look.y - head.pitch.value*settings.PITCH_SCALE
+    roll  = -car.side.y + head.roll .value*settings.ROLL_SCALE
+
+    -- Reset the last car values so the car isn't thought to be rotating
+    last_car_look = car.look:clone()
+    
     --ac.debug('state', 'stop')
     return
-  end
-  --ac.debug('state', 'moving')
+  else
+    --ac.debug('state', 'moving')
 
-  -- Displacement physics
-  -- 
-  -- For each of these, high-pass filter the car acceleration to get transients,
-  -- then evolve the position under this acceleration and displace the head.
-  --
-  -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
-  --  x = car.side
-  --  y = car.up
-  --  z = car.look
-  if settings.HORIZONTAL_ENABLED == 1 then
-    transient.x:evolve(dt, car.acceleration.x)
-    head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
-    neck.position = neck.position - head.x.value*car.side
-  end
-  if settings.VERTICAL_ENABLED == 1 then
-    transient.y:evolve(dt, car.acceleration.y)
-    head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
-    neck.position = neck.position - head.y.value*car.up
-  end
-  if settings.FORWARD_ENABLED == 1 then
-    transient.z:evolve(dt, car.acceleration.z)
-    head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
-    neck.position = neck.position - head.z.value*car.look
+    -- Displacement physics
+    -- 
+    -- For each of these, high-pass filter the car acceleration to get transients,
+    -- then evolve the position under this acceleration and displace the head.
+    --
+    -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
+    --  x = car.side
+    --  y = car.up
+    --  z = car.look
+    if settings.HORIZONTAL_ENABLED == 1 then
+      transient.x:evolve(dt, car.acceleration.x)
+      head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
+      neck.position = neck.position - head.x.value*car.side
+    end
+    if settings.VERTICAL_ENABLED == 1 then
+      transient.y:evolve(dt, car.acceleration.y)
+      head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
+      neck.position = neck.position - head.y.value*car.up
+    end
+    if settings.FORWARD_ENABLED == 1 then
+      transient.z:evolve(dt, car.acceleration.z)
+      head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
+      neck.position = neck.position - head.z.value*car.look
+    end
+
+    -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
+    -- for the orientation of the car and neck (matched to each other at the start of this 
+    -- update function).
+
+    -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
+    if settings.PITCH_ENABLED == 1 then
+      pitch = car.look.y - head.pitch:evolve_target(dt,car.look.y)*settings.PITCH_SCALE
+    end
+
+    -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
+    if settings.ROLL_ENABLED == 1 then
+      roll = -car.side.y + head.roll:evolve_target(dt,car.side.y)*settings.ROLL_SCALE
+    end
+
+    -- Yaw dynamics
+    if settings.YAW_ENABLED == 1 then
+      -- 1. Add the angular change to the yaw value, but high-pass 
+      --    it so that we are sensitive only to transients. Note we go through 
+      --    the /dt process so that variable frame rate has a smoother evolution.
+      -- Note that with the transient disabled, this just accumulates the total angle
+      --ac.debug('test', vec2(car.look.x-last_car_look.x, car.look.z-last_car_look.z):length())
+      head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
+        cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)/dt) * dt
+      --local dyaw = cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)
+      --head.yaw.value = head.yaw.value + dyaw
+      -- 2. Let the head try to relax back to center by harmonic motion.
+      head.yaw:evolve_target(dt, 0)
+
+      -- 3. Get the base value to add to the look and side vectors
+      yaw = head.yaw.value
+    end
+
+    -- Extra rotations from pivots
+    if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
+    if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
+    if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
+
   end
 
-  -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
-  -- for the orientation of the car and neck (matched to each other at the start of this 
-  -- update function).
-
-  -- The angles
-  local pitch = 0
-  local roll  = 0
-  local yaw   = 0
-
-  -- Pitch dynamics
-  if settings.PITCH_ENABLED == 1 then
-    -- 1. High-pass the angular velocity so that we are sensitive only to transients. 
-    --    Add this to the existing pitch difference between the neck and car, such 
-    --    that a given angular velocity produces a fixed offset value. Note we go through 
-    --    the /dt process so that variable frame rate has a smoother evolution.
-    -- 2. Let the head try to relax back to center by harmonic motion.
-    -- 3. Do the rotation about the appropriate axis.
-    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dot(car.angularVelocity, car.side)) * dt
-    head.pitch:evolve_target(dt,0)
-    pitch = -head.pitch.value
-  end
-
-  -- Yaw dynamics
-  if settings.YAW_ENABLED == 1 then
-    -- Same as for pitch
-    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dot(car.angularVelocity, car.up)) * dt
-    head.yaw:evolve_target(dt, 0)
-    yaw = -head.yaw.value
-  end
-
-  -- Roll dynamics
-  if settings.ROLL_ENABLED == 1 then
-    -- Same as for pitch
-    head.roll.value = head.roll.value + transient.roll:evolve(dt, dot(car.angularVelocity, car.look)) * dt
-    head.roll:evolve_target(dt, 0)
-    roll = -head.roll.value
-  end
-
-  -- Extra rotations from pivots
-  if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
-  if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
-  if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
+  -- Remember the last car look
+  last_car_look = car.look:clone()
 
   -- Do the rotations
   -- JACK: Do the rotations for all 3 and rotate by the angle
