@@ -328,6 +328,7 @@ end
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
 local last_car_look = vec3(0,0,0)
+local first_run     = true
 function script.update(dt, mode, turnMix)
 
   -- The angles we will eventually add to the neck vectors
@@ -336,7 +337,7 @@ function script.update(dt, mode, turnMix)
   local yaw   = 0
 
   -- If we just jumped to a new location or we're going slow, reset stuff
-  if car.justJumped or car.speedMs < 0.1 then
+  if first_run or car.justJumped or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -352,14 +353,19 @@ function script.update(dt, mode, turnMix)
     -- Align with the car
     head.pitch.value = car.look.y
     head.roll.value  = car.side.y
+    head.pitch.target = car.look.y
+    head.roll.target = car.look.y
 
-    -- Set it up to do the correct rotation.
+    -- Set it up to do the correct initial rotation.
     pitch =  car.look.y - head.pitch.value*settings.PITCH_SCALE
     roll  = -car.side.y + head.roll .value*settings.ROLL_SCALE
 
     -- Reset the last car values so the car isn't thought to be rotating
     last_car_look = car.look:clone()
     
+    -- This is not the first run any more
+    first_run = false
+
     --ac.debug('state', 'stop')
     return
   else
@@ -442,12 +448,11 @@ function script.update(dt, mode, turnMix)
   neck.up   = small_rotation(neck.up  , car.look, roll )
   neck.side = small_rotation(neck.side, car.look, roll )
 
-
   -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
   -- So the small rotation approximation is good
-  --ac.debug('look.length', neck.look:length())
-  --ac.debug('up.length', neck.up:length())
-  --ac.debug('side.length', neck.side:length())
+  -- ac.debug('look.length', neck.look:length())
+  -- ac.debug('up.length', neck.up:length())
+  -- ac.debug('side.length', neck.side:length())
 
   -- These tests showed that normal driving lead to <1% overlap between these basis vectors.
   -- In a crash, these things can be like 0.2, which is consistent with few percent in length errors,
