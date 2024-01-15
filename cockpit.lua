@@ -148,8 +148,6 @@ function FilterSpring:evolve_target(dt, target)
     -- Soft clip the velocity too as we approach the boundary
     self.velocity = (self.value-start_value)/dt
 
-    ac.debug('limit', self.limit*180/pi)
-
     -- May as well return it
     return self.value
 end
@@ -329,7 +327,7 @@ end
 
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
-local last_yaw=0
+local last_car_look = vec3(0,0,0)
 function script.update(dt, mode, turnMix)
 
   -- The angles we will eventually add to the neck vectors
@@ -358,10 +356,12 @@ function script.update(dt, mode, turnMix)
     -- Set it up to do the correct rotation.
     pitch =  car.look.y - head.pitch.value*settings.PITCH_SCALE
     roll  = -car.side.y + head.roll .value*settings.ROLL_SCALE
-    -- Jack: lock the vectors here just to be safe.
+
+    -- Reset the last car values so the car isn't thought to be rotating
+    last_car_look = car.look:clone()
+    
     --ac.debug('state', 'stop')
     return
-
   else
     --ac.debug('state', 'moving')
 
@@ -406,15 +406,20 @@ function script.update(dt, mode, turnMix)
 
     -- Yaw dynamics
     if settings.YAW_ENABLED == 1 then
-      -- 1. High-pass the angular velocity so that we are sensitive only to transients. 
-      --    Add this to the existing pitch difference between the neck and car, such 
-      --    that a given angular velocity produces a fixed offset value. Note we go through 
+      -- 1. Add the angular change to the yaw value, but high-pass 
+      --    it so that we are sensitive only to transients. Note we go through 
       --    the /dt process so that variable frame rate has a smoother evolution.
+      -- Note that with the transient disabled, this just accumulates the total angle
+      --ac.debug('test', vec2(car.look.x-last_car_look.x, car.look.z-last_car_look.z):length())
+      head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
+        cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)/dt) * dt
+      --local dyaw = cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)
+      --head.yaw.value = head.yaw.value + dyaw
       -- 2. Let the head try to relax back to center by harmonic motion.
-      -- 3. Do the rotation about the appropriate axis.
-      --head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dot(car.angularVelocity, car.up)) * dt
       head.yaw:evolve_target(dt, 0)
-      yaw = -head.yaw.value
+
+      -- 3. Get the base value to add to the look and side vectors
+      yaw = head.yaw.value
     end
 
     -- Extra rotations from pivots
@@ -423,6 +428,9 @@ function script.update(dt, mode, turnMix)
     if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
 
   end
+
+  -- Remember the last car look
+  last_car_look = car.look:clone()
 
   -- Do the rotations
   -- JACK: Do the rotations for all 3 and rotate by the angle
