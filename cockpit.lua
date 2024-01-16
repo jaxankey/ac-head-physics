@@ -67,7 +67,7 @@ local pi24 = 4*pi*pi
 -- Soft clipping function to place bounds on any value
 --  value is the input value, and the return value will
 --  be bounded between +/-max
-function soft_clip_less_linear(value, max)
+function soft_clip_old(value, max)
   -- return value*max/(1+math.abs(value))
   if value >  2*max then return  max end
   if value < -2*max then return -max end
@@ -251,6 +251,8 @@ local transient = {
   x     = FilterHighPass:new(settings.HORIZONTAL_RECENTER_TIME),
   y     = FilterHighPass:new(settings.VERTICAL_RECENTER_TIME),
   z     = FilterHighPass:new(settings.FORWARD_RECENTER_TIME),
+  pitch = FilterHighPass:new(settings.PITCH_SCALE),
+  roll  = FilterHighPass:new(settings.ROLL_SCALE),
   yaw   = FilterHighPass:new(settings.YAW_SCALE),
 }
 
@@ -260,18 +262,18 @@ local vertical_scale   = settings.VERTICAL_SCALE  *settings.POSITION_SCALE
 local forward_scale    = settings.FORWARD_SCALE   *settings.POSITION_SCALE
 
 -- For parsing lines like SETTING=THING
-function split_and_strip(input, delimiter)
-  local result = {}
+-- function split_and_strip(input, delimiter)
+--   local result = {}
 
-  -- Loop over the tokens using this archaic bullshit string parsing.
-  for token in input:gmatch("([^" .. delimiter .. "]+)") do
-      -- Strip leading and trailing whitespaces from each token
-      local strippedToken = token:match("^%s*(.-)%s*$")
-      table.insert(result, strippedToken)
-  end
+--   -- Loop over the tokens using this archaic bullshit string parsing.
+--   for token in input:gmatch("([^" .. delimiter .. "]+)") do
+--       -- Strip leading and trailing whitespaces from each token
+--       local strippedToken = token:match("^%s*(.-)%s*$")
+--       table.insert(result, strippedToken)
+--   end
 
-  return result
-end
+--   return result
+-- end
 
 -- Save some of this in case we want to save our own settings later.
 -- local path_view = os.getenv('HOMEPATH') .. '\\Documents\\Assetto Corsa\\cfg\\cars\\' .. ac.getCarID() .. '\\view.ini'
@@ -313,31 +315,21 @@ end
 
 -- end
 
--- Does an infinitesimal / approximate rotation of unit vector (v) about the 
--- supplied axis unit vector (a) by a distance (d << pi)
-function small_rotation(v, a, d)
-  return v + d*cross(a,v)
-end
-
--- Safely normalizes, making sure it's not dividing by zero.
-function safe_normalize(v)
-  if v:lengthSquared() < 1e-20 then v = v+vec3(1e-10,0,0) end
-  return v:normalize()
-end
-
 -- Jack: This script will wig out when there are frame drops, and may produce
 --       different effects for people with different frame rates. It doesn't use dt.
-local last_car_look = vec3(0,0,0)
+local last_car_look = vec3(0,0,1)
+local last_car_up   = vec3(0,1,0)
 local first_run     = true
 function script.update(dt, mode, turnMix)
 
-  -- The angles we will eventually add to the neck vectors
+  -- The angles we will eventually add to the neck vectors, relative to the car's 
+  -- side, look, and up vectors, respectively
   local pitch = 0
   local roll  = 0
   local yaw   = 0
 
   -- If we just jumped to a new location or we're going slow, reset stuff
-  if first_run or car.justJumped or car.speedMs < 0.1 then
+  if first_run or car.justJumped then -- or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -348,29 +340,18 @@ function script.update(dt, mode, turnMix)
     transient.x:reset()
     transient.y:reset()
     transient.z:reset()
+    transient.pitch:reset()
+    transient.roll:reset()
     transient.yaw:reset()
-
-    -- Align with the car
-    head.pitch.value = car.look.y
-    head.roll.value  = car.side.y
-    head.pitch.target = car.look.y
-    head.roll.target = car.look.y
-
-    -- Set it up to do the correct initial rotation.
-    pitch =  car.look.y - head.pitch.value*settings.PITCH_SCALE
-    roll  = -car.side.y + head.roll .value*settings.ROLL_SCALE
 
     -- Reset the last car values so the car isn't thought to be rotating
     last_car_look = car.look:clone()
-    
+    last_car_up   = car.up  :clone()
+
     -- This is not the first run any more
     first_run = false
-
-    --ac.debug('state', 'stop')
-    return
   else
-    --ac.debug('state', 'moving')
-
+   
     -- Displacement physics
     -- 
     -- For each of these, high-pass filter the car acceleration to get transients,
@@ -380,20 +361,28 @@ function script.update(dt, mode, turnMix)
     --  x = car.side
     --  y = car.up
     --  z = car.look
+    -- 
+    -- JACK: Relying on the ac physics engine here is a bit spotty, since it doesn't 
+    --       coincide with the frame rate. Can cause jitters. These are not as noticeable for
+    --       center of mass motion, though. The only other option is to calculate acceleration 
+    --       manually with two steps of different dt.
     if settings.HORIZONTAL_ENABLED == 1 then
       transient.x:evolve(dt, car.acceleration.x)
       head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
-      neck.position = neck.position - head.x.value*car.side
+      --neck.position = neck.position - head.x.value*car.side
+      neck.position:addScaled(car.side, -head.x.value)
     end
     if settings.VERTICAL_ENABLED == 1 then
       transient.y:evolve(dt, car.acceleration.y)
       head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
-      neck.position = neck.position - head.y.value*car.up
+      --neck.position = neck.position - head.y.value*car.up
+      neck.position:addScaled(car.up, -head.y.value)
     end
     if settings.FORWARD_ENABLED == 1 then
       transient.z:evolve(dt, car.acceleration.z)
       head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
-      neck.position = neck.position - head.z.value*car.look
+      --neck.position = neck.position - head.z.value*car.look
+      neck.position:addScaled(car.look, -head.z.value)
     end
 
     -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
@@ -402,12 +391,51 @@ function script.update(dt, mode, turnMix)
 
     -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
     if settings.PITCH_ENABLED == 1 then
-      pitch = car.look.y - head.pitch:evolve_target(dt,car.look.y)*settings.PITCH_SCALE
+      -- ACCUMULATION APPROACH: Advantage that there is no singularity when roll = 90 degrees
+      --                        Disadvantage that there is no tune between car vs horizon
+      -- 1. Add the angular change to the pitch value, but high-pass (if enabled)
+      --    it so that we are sensitive only to transients. Note we go through 
+      --    the /dt process so that variable frame rate has a smoother evolution.
+      -- Note that with the transient disabled, this just accumulates the total angle
+      head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
+        dot(cross(car.look, last_car_look), car.side)/dt) * dt
+
+      -- 2. Let the head try to relax back to center by harmonic motion.
+      head.pitch:evolve_target(dt, 0)
+
+      -- 3. Get the base value to add to the look and side vectors
+      pitch = head.pitch.value
+
+      -- HORIZON APPROACH
+      -- JACK: Get the vector that is the up vector with no pitch, i.e. perpendicular to car.side
+      -- This involves rotating about car.side until the look vector is in the horizon plane.
+      -- Then take an overlap between look and this vector to get the pitch. Note there 
+      -- will not always be a rotation that achieves this, e.g., when the car is at 90 degrees.
+      --  COULD use car.localVelocity.z or car.groundNormal
+      --  Cross of the side and horizon normal to get the in-plane vectoer perpendicular to both
+      --  Then cross the result with the look vector to get the pitch about the side vector
+      --pitch = car.look.y - head.pitch:evolve_target(dt,car.look.y)*settings.PITCH_SCALE
     end
 
     -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
     if settings.ROLL_ENABLED == 1 then
-      roll = -car.side.y + head.roll:evolve_target(dt,car.side.y)*settings.ROLL_SCALE
+      -- ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
+      --                        Disadvantage that there is no tune between car vs horizon
+      -- 1. Add the angular change to the roll value, but high-pass (if enabled)
+      --    it so that we are sensitive only to transients. Note we go through 
+      --    the /dt process so that variable frame rate has a smoother evolution.
+      -- Note that with the transient disabled, this just accumulates the total angle
+      head.roll.value = head.roll.value + transient.roll:evolve(dt,
+        dot(cross(car.up, last_car_up), car.look)/dt) * dt
+
+      -- 2. Let the head try to relax back to center by harmonic motion.
+      head.roll:evolve_target(dt, 0)
+
+      -- 3. Get the base value to add to the look and side vectors
+      roll = head.roll.value
+
+      -- HORIZON APPROACH
+      --roll = -car.side.y + head.roll:evolve_target(dt,car.side.y)*settings.ROLL_SCALE
     end
 
     -- Yaw dynamics
@@ -418,9 +446,8 @@ function script.update(dt, mode, turnMix)
       -- Note that with the transient disabled, this just accumulates the total angle
       --ac.debug('test', vec2(car.look.x-last_car_look.x, car.look.z-last_car_look.z):length())
       head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
-        cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)/dt) * dt
-      --local dyaw = cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)
-      --head.yaw.value = head.yaw.value + dyaw
+        dot(cross(car.look, last_car_look), car.up)/dt) * dt
+        --cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)/dt) * dt
       -- 2. Let the head try to relax back to center by harmonic motion.
       head.yaw:evolve_target(dt, 0)
 
@@ -437,16 +464,23 @@ function script.update(dt, mode, turnMix)
 
   -- Remember the last car look
   last_car_look = car.look:clone()
+  last_car_up   = car.up:clone()
 
   -- Do the rotations
   -- JACK: Do the rotations for all 3 and rotate by the angle
   --       rather than distance to handle non-orthogonality?
-  neck.look = small_rotation(neck.look, car.side, pitch)
-  neck.up   = small_rotation(neck.up  , car.side, pitch)
-  neck.look = small_rotation(neck.look, car.up  , yaw  )
-  neck.side = small_rotation(neck.side, car.up  , yaw  )
-  neck.up   = small_rotation(neck.up  , car.look, roll )
-  neck.side = small_rotation(neck.side, car.look, roll )
+  -- neck.look = small_rotation(neck.look, car.side, pitch)
+  -- neck.up   = small_rotation(neck.up  , car.side, pitch)
+  -- neck.up   = small_rotation(neck.up  , car.look, roll )
+  -- neck.side = small_rotation(neck.side, car.look, roll )
+  -- neck.look = small_rotation(neck.look, car.up  , yaw  )
+  -- neck.side = small_rotation(neck.side, car.up  , yaw  )
+  neck.look:addScaled(cross(car.side,neck.look), pitch)
+  neck.up  :addScaled(cross(car.side,neck.up  ), pitch)
+  neck.up  :addScaled(cross(car.look,neck.up  ), roll )
+  neck.side:addScaled(cross(car.look,neck.side), roll )
+  neck.look:addScaled(cross(car.up  ,neck.look), yaw  )
+  neck.side:addScaled(cross(car.up  ,neck.side), yaw  )
 
   -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
   -- So the small rotation approximation is good
@@ -461,13 +495,6 @@ function script.update(dt, mode, turnMix)
   -- ac.debug('look-side overlap', dot(neck.look, neck.side))
   -- ac.debug('side-up overlap',   dot(neck.side, neck.up))
 
-end
-
--- VERY rough normalize function that is FAST and gets a 
--- length between 1 and 1.73. It won't run away if we do this 
--- a lot. :)
-function rough_normalize(vector)
-  return vector / math.max(vector.x, vector.y, vector.z)
 end
 
 -- Vector rotation (not used right now but I don't want to redo it. :)
