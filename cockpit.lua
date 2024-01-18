@@ -40,19 +40,19 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   VERTICAL_RECENTER_TIME = 2,
 
   -- Head tilting forward
-  PITCH_SCALE     = 1,       -- Level of car pitch tracking: 1 to follow car, 0 to follow horizon
+  PITCH_TRACKING  = 1, -- Additional high-pass on car rotation (0 or 1)
   PITCH_FREQUENCY = 3,
   PITCH_DAMPING   = 1,
   PITCH_LIMIT     = 30,   -- degrees
 
   -- Head rolling with car
-  ROLL_SCALE     = 1,       -- Level of car roll tracking:  1 to follow car, 0 to follow horizon
+  ROLL_TRACKING    = 1,
   ROLL_FREQUENCY = 3,
   ROLL_DAMPING   = 1,
   ROLL_LIMIT     = 40,      -- degrees
 
   -- Let's the car turn under your head to kill yaw wobbles (yawbbles). Takes some getting used to!
-  YAW_SCALE     = 0.03,   -- How far the car turns under your head for a given rotation speed, and the maximum wobble amplitude you can eliminate.
+  YAW_TRACKING  = 1,
   YAW_FREQUENCY = 0.5,    -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
   YAW_DAMPING   = 1,
   YAW_LIMIT     = 10,     -- degrees
@@ -245,15 +245,36 @@ local head = {
   yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
 }
 
+-- Whether we're enabling the additional tracking high-pass
+local pitch_tau
+local roll_tau
+local yaw_tau
+if settings.PITCH_TRACKING > 0 then 
+  pitch_tau = 1/(2*pi*settings.PITCH_FREQUENCY) 
+  head.pitch.damping   = head.pitch.damping*0.5   -- Optimization stabilization frequency dependence
+  head.pitch.frequency = head.pitch.frequency*1.2 -- Makes the responses equal closer to the user-set frequency
+else pitch_tau = 0 end
+
+if settings.ROLL_TRACKING  > 0 then 
+  roll_tau  = 1/(2*pi*settings.ROLL_FREQUENCY)
+  head.roll.damping   = head.roll.damping*0.5
+  head.roll.frequency = head.roll.frequency*1.2
+else roll_tau = 0 end
+
+if settings.YAW_TRACKING > 0 then
+  yaw_tau = 1/(2*pi*settings.YAW_FREQUENCY)
+  head.yaw.damping   = head.yaw.damping*0.5
+  head.yaw.frequency = head.yaw.frequency*1.2
+else yaw_tau = 0 end
 
 -- Dyanmical variables for calculating accelration transients
 local transient = {
   x     = FilterHighPass:new(settings.HORIZONTAL_RECENTER_TIME),
   y     = FilterHighPass:new(settings.VERTICAL_RECENTER_TIME),
   z     = FilterHighPass:new(settings.FORWARD_RECENTER_TIME),
-  pitch = FilterHighPass:new(settings.PITCH_SCALE),
-  roll  = FilterHighPass:new(settings.ROLL_SCALE),
-  yaw   = FilterHighPass:new(settings.YAW_SCALE),
+  pitch = FilterHighPass:new(pitch_tau),
+  roll  = FilterHighPass:new(roll_tau),
+  yaw   = FilterHighPass:new(yaw_tau),
 }
 
 -- Precomputed scale factors (doesn't save much time but oh well)
@@ -320,16 +341,19 @@ local forward_scale    = settings.FORWARD_SCALE   *settings.POSITION_SCALE
 local last_car_look = vec3(0,0,1)
 local last_car_up   = vec3(0,1,0)
 local first_run     = true
+local last_car_index = -1
+local last_clock = os.clock()
 function script.update(dt, mode, turnMix)
-
+  
   -- The angles we will eventually add to the neck vectors, relative to the car's 
   -- side, look, and up vectors, respectively
   local pitch = 0
   local roll  = 0
   local yaw   = 0
 
-  -- If we just jumped to a new location or we're going slow, reset stuff
-  if first_run or car.justJumped then -- or car.speedMs < 0.1 then
+  -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
+  -- reset stuff.
+  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 then -- or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -348,10 +372,10 @@ function script.update(dt, mode, turnMix)
     last_car_look = car.look:clone()
     last_car_up   = car.up  :clone()
 
-    -- This is not the first run any more
     first_run = false
+    --ac.debug('reset', true)
   else
-   
+    --ac.debug('reset', false)
     -- Displacement physics
     -- 
     -- For each of these, high-pass filter the car acceleration to get transients,
@@ -398,7 +422,7 @@ function script.update(dt, mode, turnMix)
       --    the /dt process so that variable frame rate has a smoother evolution.
       -- Note that with the transient disabled, this just accumulates the total angle
       head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
-        dot(cross(car.look, last_car_look), car.side)/dt) * dt
+        math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
 
       -- 2. Let the head try to relax back to center by harmonic motion.
       head.pitch:evolve_target(dt, 0)
@@ -426,7 +450,7 @@ function script.update(dt, mode, turnMix)
       --    the /dt process so that variable frame rate has a smoother evolution.
       -- Note that with the transient disabled, this just accumulates the total angle
       head.roll.value = head.roll.value + transient.roll:evolve(dt,
-        dot(cross(car.up, last_car_up), car.look)/dt) * dt
+        math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
 
       -- 2. Let the head try to relax back to center by harmonic motion.
       head.roll:evolve_target(dt, 0)
@@ -446,7 +470,7 @@ function script.update(dt, mode, turnMix)
       -- Note that with the transient disabled, this just accumulates the total angle
       --ac.debug('test', vec2(car.look.x-last_car_look.x, car.look.z-last_car_look.z):length())
       head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
-        dot(cross(car.look, last_car_look), car.up)/dt) * dt
+        math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
         --cross2d(car.look.x, car.look.z, last_car_look.x, last_car_look.z)/dt) * dt
       -- 2. Let the head try to relax back to center by harmonic motion.
       head.yaw:evolve_target(dt, 0)
@@ -462,9 +486,13 @@ function script.update(dt, mode, turnMix)
 
   end
 
-  -- Remember the last car look
-  last_car_look = car.look:clone()
-  last_car_up   = car.up:clone()
+  -- Remember the last values
+  last_car_look  = car.look:clone()
+  last_car_up    = car.up:clone()
+  last_car_index = car.index
+  last_clock     = os.clock()
+  --last_isCameraOnboard = car.isCameraOnBoard -- Function not called when not onboard.
+
 
   -- Do the rotations
   -- JACK: Do the rotations for all 3 and rotate by the angle
@@ -475,12 +503,12 @@ function script.update(dt, mode, turnMix)
   -- neck.side = small_rotation(neck.side, car.look, roll )
   -- neck.look = small_rotation(neck.look, car.up  , yaw  )
   -- neck.side = small_rotation(neck.side, car.up  , yaw  )
-  neck.look:addScaled(cross(car.side,neck.look), pitch)
-  neck.up  :addScaled(cross(car.side,neck.up  ), pitch)
-  neck.up  :addScaled(cross(car.look,neck.up  ), roll )
-  neck.side:addScaled(cross(car.look,neck.side), roll )
-  neck.look:addScaled(cross(car.up  ,neck.look), yaw  )
-  neck.side:addScaled(cross(car.up  ,neck.side), yaw  )
+  neck.look:addScaled(math.cross(car.side,neck.look), pitch)
+  neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
+  neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
+  neck.side:addScaled(math.cross(car.look,neck.side), roll )
+  neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
+  neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
 
   -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
   -- So the small rotation approximation is good
@@ -497,26 +525,9 @@ function script.update(dt, mode, turnMix)
 
 end
 
--- Vector rotation (not used right now but I don't want to redo it. :)
-function rotate(vector, axis, angle)
-  local cosAngle = math.cos(angle)
-  local sinAngle = math.sin(angle)
-  return vector * cosAngle + cross(axis, vector) * sinAngle + axis * dot(axis, vector) * (1 - cosAngle)
-end
-
--- Cross product of two 3d vectors
-function cross(v1, v2)
-  return vec3(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x)
-end
-
 -- 2D vector cross product of vector (x1,y1) and (x2,y2). Returns a positive or negative scalar.
 function cross2d(x1,y1,x2,y2)
   return y1*x2 - x1*y2
-end
-
--- Dot product of two 3d vectors.
-function dot(v1, v2)
-  return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
 end
 
 
