@@ -1,0 +1,356 @@
+#LyX 2.3 created this file. For more info see http://www.lyx.org/
+\lyxformat 544
+\begin_document
+\begin_header
+\save_transient_properties true
+\origin unavailable
+\textclass article
+\use_default_options true
+\maintain_unincluded_children false
+\language english
+\language_package default
+\inputencoding auto
+\fontencoding global
+\font_roman "default" "default"
+\font_sans "default" "default"
+\font_typewriter "default" "default"
+\font_math "auto" "auto"
+\font_default_family default
+\use_non_tex_fonts false
+\font_sc false
+\font_osf false
+\font_sf_scale 100 100
+\font_tt_scale 100 100
+\use_microtype false
+\use_dash_ligatures true
+\graphics default
+\default_output_format default
+\output_sync 0
+\bibtex_command default
+\index_command default
+\paperfontsize default
+\use_hyperref false
+\papersize default
+\use_geometry false
+\use_package amsmath 1
+\use_package amssymb 1
+\use_package cancel 1
+\use_package esint 1
+\use_package mathdots 1
+\use_package mathtools 1
+\use_package mhchem 1
+\use_package stackrel 1
+\use_package stmaryrd 1
+\use_package undertilde 1
+\cite_engine basic
+\cite_engine_type default
+\use_bibtopic false
+\use_indices false
+\paperorientation portrait
+\suppress_date false
+\justification true
+\use_refstyle 1
+\use_minted 0
+\index Index
+\shortcut idx
+\color #008000
+\end_index
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\paragraph_indentation default
+\is_math_indent 0
+\math_numbering_side default
+\quotes_style english
+\dynamic_quotes 0
+\papercolumns 1
+\papersides 1
+\paperpagestyle default
+\tracking_changes false
+\output_changes false
+\html_math_output 0
+\html_css_as_file 0
+\html_be_strict false
+\end_header
+
+\begin_body
+
+\begin_layout Section
+Setup
+\end_layout
+
+\begin_layout Standard
+Suppose the car angle is oscillating at frequency 
+\begin_inset Formula $\omega$
+\end_inset
+
+ as
+\begin_inset Formula 
+\[
+\theta_{c}(t)=\theta_{c0}e^{i\omega t}
+\]
+
+\end_inset
+
+and the difference between car angle and head angle
+\begin_inset Formula 
+\[
+x=\theta_{h}-\theta_{c}=\left(\theta_{h0}-\theta_{c0}\right)e^{i\omega t}
+\]
+
+\end_inset
+
+where 
+\begin_inset Formula $\theta_{h0}$
+\end_inset
+
+ can be complex.
+ Without any spring or anything affecting 
+\begin_inset Formula $\theta_{h}$
+\end_inset
+
+, it will remain a constant (say 
+\begin_inset Quotes eld
+\end_inset
+
+0
+\begin_inset Quotes erd
+\end_inset
+
+ for convenience), and the deviation from the car will just oscillate as
+ 
+\begin_inset Formula $\theta_{c}(t).$
+\end_inset
+
+ 
+\end_layout
+
+\begin_layout Section
+Damped spring response
+\end_layout
+
+\begin_layout Standard
+The angular acceleration of the head is then
+\begin_inset Formula 
+\begin{align*}
+\ddot{\theta_{h}} & =-\Omega^{2}x-\Gamma\dot{x}\\
+\theta_{h0} & =\frac{1+i\frac{\omega\Gamma}{\Omega^{2}}}{1-\frac{\omega^{2}}{\Omega^{2}}+i\frac{\omega\Gamma}{\Omega^{2}}}\theta_{c0}
+\end{align*}
+
+\end_inset
+
+This makes a resonance with one pole roll-off after the cutoff.
+ However, what we might prefer to think about is the deviation from equilibrium
+\begin_inset Formula 
+\begin{align*}
+x_{0} & =\theta_{h0}-\theta_{c0}=\frac{1+i\frac{\omega\Gamma}{\Omega^{2}}}{1-\frac{\omega^{2}}{\Omega^{2}}+i\frac{\omega\Gamma}{\Omega^{2}}}-1\\
+ & =\frac{\frac{\omega^{2}}{\Omega^{2}}}{1-\frac{\omega^{2}}{\Omega^{2}}+i\frac{\omega\Gamma}{\Omega^{2}}}\theta_{c0}
+\end{align*}
+
+\end_inset
+
+This is 2 poles of roll-up below resonance (we track the car perfectly at
+ low frequency), and then -1 above resonance (the car just rotates under
+ us).
+ Critical damping is when 
+\begin_inset Formula 
+\[
+\Gamma=2\Omega,
+\]
+
+\end_inset
+
+which, with 
+\begin_inset Formula $\Omega=1$
+\end_inset
+
+, yields
+\begin_inset Formula 
+\[
+x_{0,\text{crit}}=\frac{\omega^{2}}{1-\omega^{2}+i2\omega}\theta_{c0}
+\]
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+High-pass
+\end_layout
+
+\begin_layout Standard
+Without a spring, the head will remain at 
+\begin_inset Formula $\theta_{h}=0$
+\end_inset
+
+, and the car will rotate underneath us.
+ If we apply a high-pass filter of cutoff frequency 
+\begin_inset Formula $\Omega_{1}$
+\end_inset
+
+ to the difference 
+\begin_inset Formula $x$
+\end_inset
+
+, we have
+\begin_inset Formula 
+\[
+x_{0}=\theta_{h0}-\theta_{c0}=\frac{-i\frac{\omega}{\Omega_{1}}}{1+i\frac{\omega}{\Omega_{1}}}\theta_{c0},
+\]
+
+\end_inset
+
+meaning we will have 1 pole of roll-up before the cutoff.
+ We can, for giggles, also look at the head motion, and find
+\begin_inset Formula 
+\[
+\theta_{h0}=\left(\frac{1}{1+i\frac{\omega}{\Omega_{1}}}\right)\theta_{c0}
+\]
+
+\end_inset
+
+which looks like a low-pass of the input signal.
+ Basically, at low frequencies, the head tracks the car, and at high frequencies
+ the head stops moving and the car moves underneath.
+\end_layout
+
+\begin_layout Section
+Combining the two
+\end_layout
+
+\begin_layout Standard
+We could consider the spring to be the 
+\begin_inset Quotes eld
+\end_inset
+
+physical head
+\begin_inset Quotes erd
+\end_inset
+
+ turning on a swivel, and the high-pass as being an 
+\begin_inset Quotes eld
+\end_inset
+
+additional car tracking
+\begin_inset Quotes erd
+\end_inset
+
+, perhaps from your eyes helping track rotations.
+ To cancel wobbles, we need 
+\begin_inset Formula $x_{0}$
+\end_inset
+
+ to be 1, which means 
+\begin_inset Formula $\theta_{h0}$
+\end_inset
+
+ is zero and we keep looking straight ahead.
+\end_layout
+
+\begin_layout Standard
+From all of this, I think the simplest approach for users will be to have
+ a checkbox that enables this extra pole of roll-up before resonance (matching
+ the 
+\begin_inset Formula $\Omega_{1}=\Omega$
+\end_inset
+
+).
+ Then again, we could also let them choose an 
+\begin_inset Quotes eld
+\end_inset
+
+additional tracking filter frequency
+\begin_inset Quotes erd
+\end_inset
+
+, to allow more freedom of the eyes to be a separate system, but that's
+ confusing AF to explain.
+\end_layout
+
+\begin_layout Standard
+If we use a critical damping parameter and both filters with matched frequency,
+ here is the comparison with one filter:
+\begin_inset Newline newline
+\end_inset
+
+
+\begin_inset Graphics
+	filename pasted1.png
+	lyxscale 70
+	width 10cm
+
+\end_inset
+
+
+\begin_inset Newline newline
+\end_inset
+
+We will not have as large of deviations from equilibrium at low frequency,
+ but we will also not quite cancel as much at high frequency.
+ We can reduce the damping a bit to compensate:
+\begin_inset Newline newline
+\end_inset
+
+
+\begin_inset Graphics
+	filename pasted2.png
+	lyxscale 70
+	width 10cm
+
+\end_inset
+
+
+\begin_inset Newline newline
+\end_inset
+
+We could then increase the resonant frequency a bit to compensate, achieving
+ better tracking below resonance and better suppression above resonance.
+ 
+\end_layout
+
+\begin_layout Standard
+Interestingly, if I compare just the critically damped harmonic oscillator
+ to the combination of the two, I get a really nice stabilization cutoff
+ by setting the harmonic oscillator damping to half the critical value:
+\begin_inset Newline newline
+\end_inset
+
+
+\begin_inset Graphics
+	filename pasted3.png
+	lyxscale 70
+	width 10cm
+
+\end_inset
+
+
+\begin_inset Newline newline
+\end_inset
+
+Zooming in the y-scale, this red curve really is just approaching 1 like
+ crazy, and not overshooting it.
+ It's always much closer to the blue line than green, all the way out to
+ 100x the mechanical resonance! Furthermore, we could scale the frequency
+ by 1.2, which puts the crossing closer to the original frequency:
+\begin_inset Newline newline
+\end_inset
+
+
+\begin_inset Graphics
+	filename pasted4.png
+	lyxscale 70
+	width 10cm
+
+\end_inset
+
+
+\begin_inset Newline newline
+\end_inset
+
+This way, we can say the vibrations are more damped above the spring frequency
+ and the car is better tracked below the spring frequency.
+\end_layout
+
+\end_body
+\end_document
