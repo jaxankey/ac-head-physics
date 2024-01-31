@@ -56,7 +56,43 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   YAW_FREQUENCY = 0.5,    -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
   YAW_DAMPING   = 1,
   YAW_LIMIT     = 10,     -- degrees
+
+  -- DEFAULT SCRIPT BEHAVIOR
+  SLIDE_FOLLOWING = 1,
+  SLIDING_LOOK_MULT = 0.8,
+  TRACK_FOLLOWING = 1,
+  TRACK_FOLLOWING_MULT = 0.85,
+  STEERING_MULT = 0.8,
+  LOOKAHEAD_DISTANCE = 20,
+  FIRST_LAUNCH = true
 })
+
+-- DEFAULT SCRIPT CODE
+local innerCfg = ac.storage({ firstLaunch = true })
+if innerCfg.firstLaunch then
+  innerCfg.firstLaunch = false
+  local neckCfg = ac.INIConfig.load(ac.getFolder(ac.FolderID.ExtCfgUser)..'/neck.ini')
+  if (neckCfg.sections.LOOKAHEAD or neckCfg.sections.ALIGNMENT_BASE or neckCfg.sections.ALIGNMENT_VR)
+      and not next(scriptSettings.sections)
+      and not neckCfg.sections.SCRIPT then
+    neckCfg:setAndSave('SCRIPT', 'ENABLED', false)
+  end
+end
+local turnHead = 0
+local driftState = 1
+local angleMult = 0
+local steerSmooth = 0
+local targetAngle = 0
+local lastAngle = 0
+local steerSpeed = 1
+local lookAheadX = 0
+local lookAheadY = 0
+local lookAheadBlend = 0
+local INVALID_SPLINE_POINT = vec3(-1, -1, -1)
+
+
+
+-- MY STUFF
 
 -- Constants
 local pi = 3.1415926535
@@ -225,7 +261,15 @@ end
 
 
 
-
+-- Dynamical variables for head position
+local head = {
+  x     = FilterSpring:new(settings.HORIZONTAL_FREQUENCY, settings.HORIZONTAL_DAMPING, settings.HORIZONTAL_LIMIT),
+  y     = FilterSpring:new(settings.VERTICAL_FREQUENCY  , settings.VERTICAL_DAMPING  , settings.VERTICAL_LIMIT),
+  z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
+  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     , settings.PITCH_LIMIT*pi/180.0),
+  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      , settings.ROLL_LIMIT *pi/180.0),
+  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
+}
 
 -- Needed for additional tracking enabled.
 local pitch_tau = 0
@@ -257,15 +301,7 @@ local transient = {
   yaw   = FilterHighPass:new(yaw_tau),
 }
 
--- Dynamical variables for head position
-local head = {
-  x     = FilterSpring:new(settings.HORIZONTAL_FREQUENCY, settings.HORIZONTAL_DAMPING, settings.HORIZONTAL_LIMIT),
-  y     = FilterSpring:new(settings.VERTICAL_FREQUENCY  , settings.VERTICAL_DAMPING  , settings.VERTICAL_LIMIT),
-  z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
-  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     , settings.PITCH_LIMIT*pi/180.0),
-  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      , settings.ROLL_LIMIT *pi/180.0),
-  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
-}
+
 
 -- Precomputed scale factors (doesn't save much time but oh well)
 local horizontal_scale = settings.HORIZONTAL_SCALE*settings.POSITION_SCALE
@@ -279,7 +315,60 @@ local first_run     = true
 local last_car_index = -1
 local last_clock = os.clock()
 function script.update(dt, mode, turnMix)
+  -- In replays, dt can be zero when stopping etc.
+  if dt == 0 then dt = 0.1 end
 
+  -- DEFAULT SCRIPT
+  --Sliding--
+  local sliding = car.localVelocity.x / math.max(3, car.speedMs)
+  local slidingMult = math.abs(sliding) * settings.SLIDING_LOOK_MULT
+  driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
+  driftState = math.saturate(driftState + (1 - settings.SLIDE_FOLLOWING))
+  angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.99, dt)
+  local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
+  local thSpeed = 0.964 + angleMult / 50
+  turnHead = math.applyLag(turnHead, thMult, thSpeed, dt)
+  local powDriftState = driftState*driftState
+
+  --Steering--
+  local tyre = car.wheels[car.steer > 0 and 0 or 1]
+  local steering = -(math.acos(math.dot(tyre.transform.look, car.side)) - math.pi/2) * 2 * math.saturate(car.speedMs/10 - 0.1)
+  steering = math.max(math.abs(steering) - 0.05, 0) * math.sign(steering)
+  local slipAngle = math.sin(math.abs(math.angle(tyre.transform.side, tyre.velocity) - math.pi/2))
+  targetAngle = math.applyLag(targetAngle, steering / (1 + slipAngle), 0.97, dt)
+  steerSpeed = math.min(math.abs(lastAngle - steering)^1.5 * 0.15, 0.15)
+  lastAngle = targetAngle
+  steerSmooth = math.applyLag(steerSmooth, targetAngle * powDriftState, 0.85 - steerSpeed, dt)
+
+  --Track Following--
+  local splinePoint = ac.trackProgressToWorldCoordinate(car.splinePosition)
+  local splineDistance = splinePoint:distance(car.position)
+  local targetPoint = ac.trackProgressToWorldCoordinate((car.splinePosition + settings.LOOKAHEAD_DISTANCE / sim.trackLengthM) % 1)
+  local lookAheadDelta = targetPoint:sub(splinePoint):normalize()
+  local facingForward = math.saturate(math.dot(lookAheadDelta, car.look))^0.5
+  local blendNow = math.lerpInvSat(splineDistance, 15, 8) * facingForward
+  lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
+  lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * powDriftState * math.saturate(car.speedMs/10 - 0.1) * settings.TRACK_FOLLOWING_MULT, car.side) * lookAheadBlend, 0.95, dt)
+  local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
+  lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
+  lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
+  ----
+  local trackFollowing = targetPoint == INVALID_SPLINE_POINT and 0 or settings.TRACK_FOLLOWING
+  local mainTurn = turnHead * settings.SLIDE_FOLLOWING + math.lerp(steerSmooth * settings.STEERING_MULT, lookAheadX, trackFollowing)
+
+  --Apply to look--
+  neck.look:addScaled(car.side,         mainTurn  *turnMix)
+  neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*trackFollowing)
+
+
+
+
+
+
+
+
+
+  -- MY STUFF
   -- Stuff I learned:
       -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
          -- for the orientation of the car and neck. They are matched to each other at the start of this 
@@ -287,155 +376,152 @@ function script.update(dt, mode, turnMix)
       -- dt can sometimes be zero in this function, so be careful!
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
-  -- In replays, dt can be zero when stopping etc.
-  if dt == 0 then dt = 0.1 end
-
   -- Thes angles we will eventually become neck rotations away from colinear with the car
-  local pitch = 0
-  local roll  = 0
-  local yaw   = 0
+  -- local pitch = 0
+  -- local roll  = 0
+  -- local yaw   = 0
 
-  -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
-  -- reset stuff.
-  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 then -- or car.speedMs < 0.1 then
-    head.pitch:reset()
-    head.roll:reset()
-    head.yaw:reset()
-    head.x:reset()
-    head.y:reset()
-    head.z:reset()
+  -- -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
+  -- -- reset stuff.
+  -- if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 then -- or car.speedMs < 0.1 then
+  --   head.pitch:reset()
+  --   head.roll:reset()
+  --   head.yaw:reset()
+  --   head.x:reset()
+  --   head.y:reset()
+  --   head.z:reset()
 
-    transient.x:reset()
-    transient.y:reset()
-    transient.z:reset()
-    transient.pitch:reset()
-    transient.roll:reset()
-    transient.yaw:reset()
+  --   transient.x:reset()
+  --   transient.y:reset()
+  --   transient.z:reset()
+  --   transient.pitch:reset()
+  --   transient.roll:reset()
+  --   transient.yaw:reset()
 
-    -- Reset the last car values so the car isn't thought to be rotating
-    last_car_look = car.look:clone()
-    last_car_up   = car.up  :clone()
+  --   -- Reset the last car values so the car isn't thought to be rotating
+  --   last_car_look = car.look:clone()
+  --   last_car_up   = car.up  :clone()
 
-    first_run = false
-  else
+  --   first_run = false
+  -- else
 
-    -- DISPLACEMENT PHYSICS
-    -- 
-    -- For each of these, high-pass filter the car acceleration to get transients (unless
-    -- the recenter time is set to zero, in which case we just use acceleration),
-    -- then evolve the position under this acceleration and displace the head.
-    --
-    -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
-    --  x = car.side
-    --  y = car.up
-    --  z = car.look
-    --
-    -- Note using car.acceleration has the disadvantage that the physics engine doesn't
-    -- coincide with the frame rate, which can cause jitters when frame rate is low. 
-    -- These are not as noticeable for center-of-mass motion, as much. 
-    -- The only other option is to calculate acceleration manually with two steps of 
-    -- different dt, which may introduce lag, but we could also maybe implement an 
-    -- accumulation approach like for rotations.
-    if settings.HORIZONTAL_ENABLED == 1 then
-      transient.x:evolve(dt, car.acceleration.x)
-      head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
-      neck.position:addScaled(car.side, -head.x.value)
-    end
-    if settings.VERTICAL_ENABLED == 1 then
-      transient.y:evolve(dt, car.acceleration.y)
-      head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
-      neck.position:addScaled(car.up, -head.y.value)
-    end
-    if settings.FORWARD_ENABLED == 1 then
-      transient.z:evolve(dt, car.acceleration.z)
-      head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
-      neck.position:addScaled(car.look, -head.z.value)
-    end
+  --   -- DISPLACEMENT PHYSICS
+  --   -- 
+  --   -- For each of these, high-pass filter the car acceleration to get transients (unless
+  --   -- the recenter time is set to zero, in which case we just use acceleration),
+  --   -- then evolve the position under this acceleration and displace the head.
+  --   --
+  --   -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
+  --   --  x = car.side
+  --   --  y = car.up
+  --   --  z = car.look
+  --   --
+  --   -- Note using car.acceleration has the disadvantage that the physics engine doesn't
+  --   -- coincide with the frame rate, which can cause jitters when frame rate is low. 
+  --   -- These are not as noticeable for center-of-mass motion, as much. 
+  --   -- The only other option is to calculate acceleration manually with two steps of 
+  --   -- different dt, which may introduce lag, but we could also maybe implement an 
+  --   -- accumulation approach like for rotations.
+  --   if settings.HORIZONTAL_ENABLED == 1 then
+  --     transient.x:evolve(dt, car.acceleration.x)
+  --     head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
+  --     neck.position:addScaled(car.side, -head.x.value)
+  --   end
+  --   if settings.VERTICAL_ENABLED == 1 then
+  --     transient.y:evolve(dt, car.acceleration.y)
+  --     head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
+  --     neck.position:addScaled(car.up, -head.y.value)
+  --   end
+  --   if settings.FORWARD_ENABLED == 1 then
+  --     transient.z:evolve(dt, car.acceleration.z)
+  --     head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
+  --     neck.position:addScaled(car.look, -head.z.value)
+  --   end
 
-    -- ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
-      -- Disadvantage that there is no tune between car vs horizon
-      -- 1. Add the angular change to the roll value
-      -- 2. If "extra tracking" is enabled, high-pass according to the optimal calculations.
-      -- 3. Evolve the rotation as a harmonic oscillator.
-      -- 4. Later, if pivots are enables, we add some extra angle from head displacement.
-      -- Note we do the /dt process so that variable frame rate has a smoother evolution.
+  --   -- ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
+  --     -- Disadvantage that there is no tune between car vs horizon
+  --     -- 1. Add the angular change to the roll value
+  --     -- 2. If "extra tracking" is enabled, high-pass according to the optimal calculations.
+  --     -- 3. Evolve the rotation as a harmonic oscillator.
+  --     -- 4. Later, if pivots are enables, we add some extra angle from head displacement.
+  --     -- Note we do the /dt process so that variable frame rate has a smoother evolution.
 
-    -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
-    if settings.PITCH_ENABLED == 1 then
-      -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-      head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
-        math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
+  --   -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
+  --   if settings.PITCH_ENABLED == 1 then
+  --     -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
+  --     head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
+  --       math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
 
-      -- 3: Let the head try to relax back to center by harmonic motion.
-      head.pitch:evolve_target(dt, 0)
+  --     -- 3: Let the head try to relax back to center by harmonic motion.
+  --     head.pitch:evolve_target(dt, 0)
 
-      -- Prep for 4: Get the base value to add to the look and side vectors
-      pitch = head.pitch.value
+  --     -- Prep for 4: Get the base value to add to the look and side vectors
+  --     pitch = head.pitch.value
 
-    end
+  --   end
 
-    -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
-    if settings.ROLL_ENABLED == 1 then
-      -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-      head.roll.value = head.roll.value + transient.roll:evolve(dt,
-        math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
+  --   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
+  --   if settings.ROLL_ENABLED == 1 then
+  --     -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
+  --     head.roll.value = head.roll.value + transient.roll:evolve(dt,
+  --       math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
 
-      -- 3: Let the head try to relax back to center by harmonic motion.
-      head.roll:evolve_target(dt, 0)
+  --     -- 3: Let the head try to relax back to center by harmonic motion.
+  --     head.roll:evolve_target(dt, 0)
 
-      -- Prep for 4: Get the base value to add to the look and side vectors
-      roll = head.roll.value
-    end
+  --     -- Prep for 4: Get the base value to add to the look and side vectors
+  --     roll = head.roll.value
+  --   end
 
-    -- Yaw dynamics
-    if settings.YAW_ENABLED == 1 then
-      -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-      head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
-        math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
+  --   -- Yaw dynamics
+  --   if settings.YAW_ENABLED == 1 then
+  --     -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
+  --     head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
+  --       math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
 
-      -- 3: Let the head try to relax back to center by harmonic motion.
-      head.yaw:evolve_target(dt, 0)
+  --     -- 3: Let the head try to relax back to center by harmonic motion.
+  --     head.yaw:evolve_target(dt, 0)
 
-      -- Prep for 4: Get the base value to add to the look and side vectors
-      yaw = head.yaw.value
-    end
+  --     -- Prep for 4: Get the base value to add to the look and side vectors
+  --     yaw = head.yaw.value
+  --   end
 
-    -- 4: Extra rotations from pivots
-    if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
-    if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
-    if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
+  --   -- 4: Extra rotations from pivots
+  --   if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
+  --   if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
+  --   if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
 
-  end
+  -- end
 
-  -- Remember the last values (making copies)
-  last_car_look  = car.look:clone()
-  last_car_up    = car.up  :clone()
-  last_car_index = car.index
-  last_clock     = os.clock()
+  -- -- Remember the last values (making copies)
+  -- last_car_look  = car.look:clone()
+  -- last_car_up    = car.up  :clone()
+  -- last_car_index = car.index
+  -- last_clock     = os.clock()
 
-  -- Do the rotations
-  -- NOTE: This is an approximation, rotating the most important 2 vectors.
-  --       We could try rotating all 3 and use a (costly) normalized angle rotation
-  --       rather than distance to improve non-orthogonality?
-  neck.look:addScaled(math.cross(car.side,neck.look), pitch)
-  neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
-  neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
-  neck.side:addScaled(math.cross(car.look,neck.side), roll )
-  neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
-  neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
+  -- -- Do the rotations
+  -- -- NOTE: This is an approximation, rotating the most important 2 vectors.
+  -- --       We could try rotating all 3 and use a (costly) normalized angle rotation
+  -- --       rather than distance to improve non-orthogonality?
+  -- neck.look:addScaled(math.cross(car.side,neck.look), pitch)
+  -- neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
+  -- neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
+  -- neck.side:addScaled(math.cross(car.look,neck.side), roll )
+  -- neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
+  -- neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
 
   -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
   -- So the small rotation approximation is pretty good
-  -- ac.debug('look.length', neck.look:length())
-  -- ac.debug('up.length', neck.up:length())
-  -- ac.debug('side.length', neck.side:length())
+  ac.debug('look.length', neck.look:length())
+  ac.debug('up.length', neck.up:length())
+  ac.debug('side.length', neck.side:length())
 
   -- These tests showed that normal driving lead to <1% overlap between these basis vectors.
   -- In a crash, these things can be like 0.2, which is consistent with few percent in length errors,
   -- which are second order (overlap is first order)
-  -- ac.debug('look-up overlap',   dot(neck.look, neck.up))
-  -- ac.debug('look-side overlap', dot(neck.look, neck.side))
-  -- ac.debug('side-up overlap',   dot(neck.side, neck.up))
+  ac.debug('look-up overlap',   math.dot(neck.look, neck.up))
+  ac.debug('look-side overlap', math.dot(neck.look, neck.side))
+  ac.debug('side-up overlap',   math.dot(neck.side, neck.up))
 end
 
 
