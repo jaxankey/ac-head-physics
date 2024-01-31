@@ -78,17 +78,7 @@ if innerCfg.firstLaunch then
     neckCfg:setAndSave('SCRIPT', 'ENABLED', false)
   end
 end
-local turnHead = 0
-local driftState = 1
-local angleMult = 0
-local steerSmooth = 0
-local targetAngle = 0
-local lastAngle = 0
-local steerSpeed = 1
-local lookAheadX = 0
-local lookAheadY = 0
-local lookAheadBlend = 0
-local INVALID_SPLINE_POINT = vec3(-1, -1, -1)
+
 
 
 
@@ -314,51 +304,83 @@ local last_car_up   = vec3(0,1,0)
 local first_run     = true
 local last_car_index = -1
 local last_clock = os.clock()
+
+-- DEFAULT SCRIPT DYNAMICAL VARIABLES
+local slidingHeadTurn = 0
+local driftState = 1
+local angleMult = 0
+local steerSmooth = 0
+local targetAngle = 0
+local lastAngle = 0
+local steerSpeed = 1
+local lookAheadX = 0
+local lookAheadY = 0
+local lookAheadBlend = 0
+local INVALID_SPLINE_POINT = vec3(-1, -1, -1)
+
+-- MAIN UPDATE FUNCTION CALLED EVERY FRAME
 function script.update(dt, mode, turnMix)
   -- In replays, dt can be zero when stopping etc.
   if dt == 0 then dt = 0.1 end
 
   -- DEFAULT SCRIPT
   --Sliding--
-  local sliding = car.localVelocity.x / math.max(3, car.speedMs)
-  local slidingMult = math.abs(sliding) * settings.SLIDING_LOOK_MULT
-  driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
-  driftState = math.saturate(driftState + (1 - settings.SLIDE_FOLLOWING))
-  angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.99, dt)
-  local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
-  local thSpeed = 0.964 + angleMult / 50
-  turnHead = math.applyLag(turnHead, thMult, thSpeed, dt)
-  local powDriftState = driftState*driftState
+  local sliding_mult = settings.SLIDE_FOLLOWING*settings.SLIDING_LOOK_MULT
+  if settings.SLIDE_FOLLOWING then
+    local sliding = car.localVelocity.x / math.max(3, car.speedMs)
+    local slidingMult = math.abs(sliding) * settings.SLIDING_LOOK_MULT
+    driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
+    driftState = math.saturate(driftState + (1 - settings.SLIDE_FOLLOWING))
+    angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.99, dt)
+    local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
+    local thSpeed = 0.964 + angleMult / 50
+    slidingHeadTurn = math.applyLag(slidingHeadTurn, thMult, thSpeed, dt)
+  end
 
   --Steering--
-  local tyre = car.wheels[car.steer > 0 and 0 or 1]
-  local steering = -(math.acos(math.dot(tyre.transform.look, car.side)) - math.pi/2) * 2 * math.saturate(car.speedMs/10 - 0.1)
-  steering = math.max(math.abs(steering) - 0.05, 0) * math.sign(steering)
-  local slipAngle = math.sin(math.abs(math.angle(tyre.transform.side, tyre.velocity) - math.pi/2))
-  targetAngle = math.applyLag(targetAngle, steering / (1 + slipAngle), 0.97, dt)
-  steerSpeed = math.min(math.abs(lastAngle - steering)^1.5 * 0.15, 0.15)
-  lastAngle = targetAngle
-  steerSmooth = math.applyLag(steerSmooth, targetAngle * powDriftState, 0.85 - steerSpeed, dt)
+  local steering_mult = settings.STEERING_FOLLOWING*settings.STEERING_MULT
+  if settings.STEERING_FOLLOWING then
+    local tyre = car.wheels[car.steer > 0 and 0 or 1]
+    local steering = -(math.acos(math.dot(tyre.transform.look, car.side)) - math.pi/2) * 2 * math.saturate(car.speedMs/10 - 0.1)
+    steering = math.max(math.abs(steering) - 0.05, 0) * math.sign(steering)
+    local slipAngle = math.sin(math.abs(math.angle(tyre.transform.side, tyre.velocity) - math.pi/2))
+    targetAngle = math.applyLag(targetAngle, steering / (1 + slipAngle), 0.97, dt)
+    steerSpeed = math.min(math.abs(lastAngle - steering)^1.5 * 0.15, 0.15)
+    lastAngle = targetAngle
+    steerSmooth = math.applyLag(steerSmooth, targetAngle * driftState^2, 0.85 - steerSpeed, dt)
+  end
 
   --Track Following--
-  local splinePoint = ac.trackProgressToWorldCoordinate(car.splinePosition)
-  local splineDistance = splinePoint:distance(car.position)
-  local targetPoint = ac.trackProgressToWorldCoordinate((car.splinePosition + settings.LOOKAHEAD_DISTANCE / sim.trackLengthM) % 1)
-  local lookAheadDelta = targetPoint:sub(splinePoint):normalize()
-  local facingForward = math.saturate(math.dot(lookAheadDelta, car.look))^0.5
-  local blendNow = math.lerpInvSat(splineDistance, 15, 8) * facingForward
-  lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
-  lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * powDriftState * math.saturate(car.speedMs/10 - 0.1) * settings.TRACK_FOLLOWING_MULT, car.side) * lookAheadBlend, 0.95, dt)
-  local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
-  lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
-  lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
-  ----
-  local trackFollowing = targetPoint == INVALID_SPLINE_POINT and 0 or settings.TRACK_FOLLOWING
-  local mainTurn = turnHead * settings.SLIDE_FOLLOWING + math.lerp(steerSmooth * settings.STEERING_MULT, lookAheadX, trackFollowing)
+  local trackFollowing = settings.TRACK_FOLLOWING*settings.TRACK_FOLLOWING_MULT -- multiplier from 0 to 1
+  if settings.TRACK_FOLLOWING then
+    local splinePoint = ac.trackProgressToWorldCoordinate(car.splinePosition)
+    local splineDistance = splinePoint:distance(car.position)
+    local targetPoint = ac.trackProgressToWorldCoordinate((car.splinePosition + settings.LOOKAHEAD_DISTANCE / sim.trackLengthM) % 1)
+    local lookAheadDelta = targetPoint:sub(splinePoint):normalize()
+    local facingForward = math.saturate(math.dot(lookAheadDelta, car.look))^0.5
+    local blendNow = math.lerpInvSat(splineDistance, 15, 8) * facingForward
+    lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
+    lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * driftState^2 * math.saturate(car.speedMs/10 - 0.1) * settings.TRACK_FOLLOWING_MULT, car.side) * lookAheadBlend, 0.95, dt)
+    local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
+    lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
+    lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
+    if targetPoint == INVALID_SPLINE_POINT then trackFollowing = 0 end
+  end
+  -- Calculate the main turn angle from sliding angle and a mix between the steering head angle and the track following
+  local mainTurn = slidingHeadTurn*sliding_mult + math.lerp(steerSmooth*steering_mult, lookAheadX, trackFollowing)
+
+  ac.debug('mainTurn'  , mainTurn  )
+  ac.debug('lookAheadY', lookAheadY)
 
   --Apply to look--
-  neck.look:addScaled(car.side,         mainTurn  *turnMix)
-  neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*trackFollowing)
+  if mainTurn ~= 0 and lookAheadY ~= 0 then
+    -- Rotates head about the car's up axis
+    neck.look:addScaled(car.side, mainTurn*turnMix)
+
+    -- Adds a little extra vertical to follow the track
+    neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*trackFollowing)
+  end
+
 
 
 
