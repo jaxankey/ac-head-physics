@@ -58,9 +58,8 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   YAW_LIMIT     = 10,     -- degrees
 
   -- DEFAULT SCRIPT BEHAVIOR
-  SLIDE_FOLLOWING = 1,
+  ANTICIPATION = 0,
   SLIDING_LOOK_MULT = 0.8,
-  TRACK_FOLLOWING = 1,
   TRACK_FOLLOWING_MULT = 0.85,
   STEERING_MULT = 0.8,
   LOOKAHEAD_DISTANCE = 20,
@@ -114,7 +113,22 @@ function soft_clip(value, max, target)
   end
 end
 
+-- function cross2d(x1,y1,x2,y2)
+--   return x1*y2-y1*x2
+-- end
 
+-- Rotates IN PLACE the unit vector (v) about unit axis (axis) by small angle (angle)
+function small_rotation(v,axis,angle)
+  -- v x axis has length sin(theta), and we want to add angle*sin(theta) in the perpendicular direction.
+  v:addScaled(math.cross(v,axis), angle)
+end
+
+-- Rotates three orthonormal vectors (x,y,z) about the supplied axis by small angle [radians]
+function small_rotation_xyz(x,y,z,axis,angle)
+  small_rotation(x,axis,angle)
+  small_rotation(y,axis,angle)
+  small_rotation(z,axis,angle)
+end
 
 
 -- Object to hold and evolve a dynamical variable with a spring and damper
@@ -320,77 +334,10 @@ local INVALID_SPLINE_POINT = vec3(-1, -1, -1)
 
 -- MAIN UPDATE FUNCTION CALLED EVERY FRAME
 function script.update(dt, mode, turnMix)
+
   -- In replays, dt can be zero when stopping etc.
   if dt == 0 then dt = 0.1 end
 
-  -- DEFAULT SCRIPT
-  --Sliding--
-  local sliding_mult = settings.SLIDE_FOLLOWING*settings.SLIDING_LOOK_MULT
-  if settings.SLIDE_FOLLOWING then
-    local sliding = car.localVelocity.x / math.max(3, car.speedMs)
-    local slidingMult = math.abs(sliding) * settings.SLIDING_LOOK_MULT
-    driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
-    driftState = math.saturate(driftState + (1 - settings.SLIDE_FOLLOWING))
-    angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.99, dt)
-    local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
-    local thSpeed = 0.964 + angleMult / 50
-    slidingHeadTurn = math.applyLag(slidingHeadTurn, thMult, thSpeed, dt)
-  end
-
-  --Steering--
-  local steering_mult = settings.STEERING_FOLLOWING*settings.STEERING_MULT
-  if settings.STEERING_FOLLOWING then
-    local tyre = car.wheels[car.steer > 0 and 0 or 1]
-    local steering = -(math.acos(math.dot(tyre.transform.look, car.side)) - math.pi/2) * 2 * math.saturate(car.speedMs/10 - 0.1)
-    steering = math.max(math.abs(steering) - 0.05, 0) * math.sign(steering)
-    local slipAngle = math.sin(math.abs(math.angle(tyre.transform.side, tyre.velocity) - math.pi/2))
-    targetAngle = math.applyLag(targetAngle, steering / (1 + slipAngle), 0.97, dt)
-    steerSpeed = math.min(math.abs(lastAngle - steering)^1.5 * 0.15, 0.15)
-    lastAngle = targetAngle
-    steerSmooth = math.applyLag(steerSmooth, targetAngle * driftState^2, 0.85 - steerSpeed, dt)
-  end
-
-  --Track Following--
-  local trackFollowing = settings.TRACK_FOLLOWING*settings.TRACK_FOLLOWING_MULT -- multiplier from 0 to 1
-  if settings.TRACK_FOLLOWING then
-    local splinePoint = ac.trackProgressToWorldCoordinate(car.splinePosition)
-    local splineDistance = splinePoint:distance(car.position)
-    local targetPoint = ac.trackProgressToWorldCoordinate((car.splinePosition + settings.LOOKAHEAD_DISTANCE / sim.trackLengthM) % 1)
-    local lookAheadDelta = targetPoint:sub(splinePoint):normalize()
-    local facingForward = math.saturate(math.dot(lookAheadDelta, car.look))^0.5
-    local blendNow = math.lerpInvSat(splineDistance, 15, 8) * facingForward
-    lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
-    lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * driftState^2 * math.saturate(car.speedMs/10 - 0.1) * settings.TRACK_FOLLOWING_MULT, car.side) * lookAheadBlend, 0.95, dt)
-    local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
-    lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
-    lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
-    if targetPoint == INVALID_SPLINE_POINT then trackFollowing = 0 end
-  end
-  -- Calculate the main turn angle from sliding angle and a mix between the steering head angle and the track following
-  local mainTurn = slidingHeadTurn*sliding_mult + math.lerp(steerSmooth*steering_mult, lookAheadX, trackFollowing)
-
-  ac.debug('mainTurn'  , mainTurn  )
-  ac.debug('lookAheadY', lookAheadY)
-
-  --Apply to look--
-  if mainTurn ~= 0 and lookAheadY ~= 0 then
-    -- Rotates head about the car's up axis
-    neck.look:addScaled(car.side, mainTurn*turnMix)
-
-    -- Adds a little extra vertical to follow the track
-    neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*trackFollowing)
-  end
-
-
-
-
-
-
-
-
-
-
-  -- MY STUFF
   -- Stuff I learned:
       -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
          -- for the orientation of the car and neck. They are matched to each other at the start of this 
@@ -399,34 +346,128 @@ function script.update(dt, mode, turnMix)
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
   -- Thes angles we will eventually become neck rotations away from colinear with the car
-  -- local pitch = 0
-  -- local roll  = 0
-  -- local yaw   = 0
+  local pitch = 0
+  local roll  = 0
+  local yaw   = 0
 
-  -- -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
-  -- -- reset stuff.
-  -- if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 then -- or car.speedMs < 0.1 then
-  --   head.pitch:reset()
-  --   head.roll:reset()
-  --   head.yaw:reset()
-  --   head.x:reset()
-  --   head.y:reset()
-  --   head.z:reset()
+  -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
+  -- reset stuff.
+  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 or car.speedMs < 0.001 then
+    head.pitch:reset()
+    head.roll:reset()
+    head.yaw:reset()
+    head.x:reset()
+    head.y:reset()
+    head.z:reset()
 
-  --   transient.x:reset()
-  --   transient.y:reset()
-  --   transient.z:reset()
-  --   transient.pitch:reset()
-  --   transient.roll:reset()
-  --   transient.yaw:reset()
+    transient.x:reset()
+    transient.y:reset()
+    transient.z:reset()
+    transient.pitch:reset()
+    transient.roll:reset()
+    transient.yaw:reset()
 
-  --   -- Reset the last car values so the car isn't thought to be rotating
-  --   last_car_look = car.look:clone()
-  --   last_car_up   = car.up  :clone()
+    -- Reset the last car values so the car isn't thought to be rotating
+    last_car_look = car.look:clone()
+    last_car_up   = car.up  :clone()
 
-  --   first_run = false
-  -- else
+    first_run = false
 
+  -- Do the dynamics
+  ac.debug('waiting', true)
+  else
+  ac.debug('waiting', false)
+
+    -- OLD SCRIPT BEHAVIOR (FIXED)
+    if settings.ANTICIPATION then
+
+      --Sliding--
+      local sliding_mult = settings.ANTICIPATION*settings.SLIDING_LOOK_MULT
+      ac.debug('sliding', sliding_mult)
+      if sliding_mult ~= 0 and car.speedMs > 0.5 and car.gear >= 0 then
+
+        -- Get the unit vectors for the car's direction and look
+        local vh   = car.velocity:clone()/car.speedMs -- Unit vector in velocity direction
+        local look = neck.look:clone()                -- Neck look direction
+        --local axis = vh:cross(look)                   -- Rotation axis * sin(theta)
+
+        -- Don't do this unless we're rolling at least somewhat forward
+        if math.dot(look,vh) > 0 then
+      
+          -- remove the vertical component from look
+          vh = vh - neck.up*neck.up:dot(vh)
+
+          -- Get the angle of rotation around neck.up
+          slidingHeadTurn = math.applyLag(slidingHeadTurn, soft_clip(math.cross(vh-look, neck.up):dot(neck.side), head.yaw.limit), 0.99, dt)
+          
+                 
+
+          -- local sliding = car.localVelocity.x / math.max(0.01, car.speedMs)
+          -- local slidingMult = math.abs(sliding) * sliding_mult
+          -- driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
+          -- driftState = math.saturate(driftState + (1 - sliding_mult)) -- - settings.SLIDE_FOLLOWING))
+          -- angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.97, dt)
+          -- local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
+          -- local thSpeed = 0.964 + angleMult / 50
+          -- slidingHeadTurn = math.applyLag(slidingHeadTurn, thMult, thSpeed, dt)
+        else
+          -- Get the angle of rotation around neck.up
+          slidingHeadTurn = math.applyLag(slidingHeadTurn, 0, 0.99, dt)
+        end
+        
+      
+      else
+        slidingHeadTurn = math.applyLag(slidingHeadTurn, 0, 0.99, dt)
+      end
+      -- Now we do the rotation around the neck.up axis
+      small_rotation(neck.look, neck.up, slidingHeadTurn)
+
+      --Steering--
+      -- local steering_mult = settings.ANTICIPATION*settings.STEERING_MULT
+      -- if steering_mult ~= 0 then
+      --   local tyre = car.wheels[car.steer > 0 and 0 or 1]
+      --   local steering = -(math.acos(math.dot(tyre.transform.look, car.side)) - math.pi/2) * 2 * math.saturate(car.speedMs/10 - 0.1)
+      --   steering = math.max(math.abs(steering) - 0.05, 0) * math.sign(steering)
+      --   local slipAngle = math.sin(math.abs(math.angle(tyre.transform.side, tyre.velocity) - math.pi/2))
+      --   targetAngle = math.applyLag(targetAngle, steering / (1 + slipAngle), 0.97, dt)
+      --   steerSpeed = math.min(math.abs(lastAngle - steering)^1.5 * 0.15, 0.15)
+      --   lastAngle = targetAngle
+      --   steerSmooth = math.applyLag(steerSmooth, targetAngle * driftState^2, 0.85 - steerSpeed, dt)
+      -- end
+
+      -- --Track Following--
+      -- local track_following_mult = settings.ANTICIPATION*settings.TRACK_FOLLOWING_MULT -- multiplier from 0 to 1
+      -- if track_following_mult then
+      --   local splinePoint = ac.trackProgressToWorldCoordinate(car.splinePosition)
+      --   local splineDistance = splinePoint:distance(car.position)
+      --   local targetPoint = ac.trackProgressToWorldCoordinate((car.splinePosition + settings.LOOKAHEAD_DISTANCE / sim.trackLengthM) % 1)
+      --   local lookAheadDelta = targetPoint:sub(splinePoint):normalize()
+      --   local facingForward = math.saturate(math.dot(lookAheadDelta, car.look))^0.5
+      --   local blendNow = math.lerpInvSat(splineDistance, 15, 8) * facingForward
+      --   lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
+      --   lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * driftState^2 * math.saturate(car.speedMs/10 - 0.1) * track_following_mult, car.side) * lookAheadBlend, 0.95, dt)
+      --   local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
+      --   lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
+      --   lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
+      --   if targetPoint == INVALID_SPLINE_POINT then track_following_mult = 0 end
+      -- end
+      -- -- Calculate the main turn angle from sliding angle and a mix between the steering head angle and the track following
+      -- local mainTurn = slidingHeadTurn*sliding_mult + math.lerp(steerSmooth*steering_mult, lookAheadX, track_following_mult)
+
+      -- ac.debug('mainTurn'  , mainTurn  )
+      -- ac.debug('lookAheadY', lookAheadY)
+
+      --Apply to look--
+      -- if mainTurn ~= 0 or lookAheadY ~= 0 then
+      --   -- Rotates head about the car's up axis
+      --   neck.look:addScaled(car.side, mainTurn*turnMix)
+
+      --   -- Adds a little extra vertical to follow the track
+      --   neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*track_following_mult)
+      -- end
+    end
+
+  
   --   -- DISPLACEMENT PHYSICS
   --   -- 
   --   -- For each of these, high-pass filter the car acceleration to get transients (unless
@@ -513,13 +554,13 @@ function script.update(dt, mode, turnMix)
   --   if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
   --   if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
 
-  -- end
+  end
 
-  -- -- Remember the last values (making copies)
-  -- last_car_look  = car.look:clone()
-  -- last_car_up    = car.up  :clone()
-  -- last_car_index = car.index
-  -- last_clock     = os.clock()
+  -- Remember the last values (making copies)
+  last_car_look  = car.look:clone()
+  last_car_up    = car.up  :clone()
+  last_car_index = car.index
+  last_clock     = os.clock()
 
   -- -- Do the rotations
   -- -- NOTE: This is an approximation, rotating the most important 2 vectors.
@@ -544,6 +585,7 @@ function script.update(dt, mode, turnMix)
   ac.debug('look-up overlap',   math.dot(neck.look, neck.up))
   ac.debug('look-side overlap', math.dot(neck.look, neck.side))
   ac.debug('side-up overlap',   math.dot(neck.side, neck.up))
+
 end
 
 
