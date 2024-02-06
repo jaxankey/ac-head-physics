@@ -57,13 +57,10 @@ local settings = scriptSettings:mapSection('SETTINGS', {
   YAW_DAMPING   = 1,
   YAW_LIMIT     = 10,     -- degrees
 
-  -- DEFAULT SCRIPT BEHAVIOR
-  ANTICIPATION = 0,
-  SLIDING_LOOK_MULT = 0.8,
-  TRACK_FOLLOWING_MULT = 0.85,
-  STEERING_MULT = 0.8,
-  LOOKAHEAD_DISTANCE = 20,
-  FIRST_LAUNCH = true
+  -- Other tracking options
+  OTHER_TRACKING = 0,
+  DRIFT_SCALE = 0.0, -- How much the head looks in the direction of the actual car motion
+  DRIFT_LAG   = 0.5, -- Time constant for lag in this motion
 })
 
 -- DEFAULT SCRIPT CODE
@@ -250,7 +247,7 @@ function FilterHighPass:evolve(dt, input)
   local a = self.time_constant/(self.time_constant+dt)
 
   -- Get the new output (updating previous)
-  self.value = a*self.value + a*(input-self.previous_input)
+  self.value = a*(self.value+input-self.previous_input)
   self.previous_input = input
 
   return self.value
@@ -262,7 +259,46 @@ function FilterHighPass:reset()
   self.previous_input = 0
 end
 
+-- DSP Low-pass filter class
+FilterLowPass = {
+  time_constant  = 2.0, -- How long until a change in value returns to zero
+  value          = 0,   -- Previous output value
+}
 
+-- Function to create an instance
+function FilterLowPass:new(time_constant)
+
+  -- Boilerplate class creation lua nonsense
+  local instance = setmetatable({}, { __index = FilterLowPass })
+
+  -- Initialization
+  instance.time_constant = time_constant
+
+  return instance
+end
+
+-- Function that evolves the high pass 
+function FilterLowPass:evolve(dt, input)
+
+  -- Disabled
+  if self.time_constant == 0 then
+    self.value = input
+    return self.value
+  end
+
+  -- Constant for easier coding
+  local a = dt/(dt+self.time_constant)
+
+  -- Get the new output (updating previous)
+  self.value = self.value + a*(input - self.value)
+  
+  return self.value
+end
+
+-- Resets the variables
+function FilterLowPass:reset()
+  self.value = 0
+end
 
 
 -- Dynamical variables for head position
@@ -305,7 +341,10 @@ local transient = {
   yaw   = FilterHighPass:new(yaw_tau),
 }
 
-
+-- Anticipatory and other tracking head motion
+local other_tracking = {
+  drift = FilterLowPass:new(settings.DRIFT_LAG)
+}
 
 -- Precomputed scale factors (doesn't save much time but oh well)
 local horizontal_scale = settings.HORIZONTAL_SCALE*settings.POSITION_SCALE
@@ -320,7 +359,6 @@ local last_car_index = -1
 local last_clock = os.clock()
 
 -- DEFAULT SCRIPT DYNAMICAL VARIABLES
-local slidingHeadTurn = 0
 local driftState = 1
 local angleMult = 0
 local steerSmooth = 0
@@ -332,7 +370,12 @@ local lookAheadY = 0
 local lookAheadBlend = 0
 local INVALID_SPLINE_POINT = vec3(-1, -1, -1)
 
--- MAIN UPDATE FUNCTION CALLED EVERY FRAME
+
+
+
+----------------------------------------------
+-- THE MAIN UPATER, EVERY FRAME! -------------
+----------------------------------------------
 function script.update(dt, mode, turnMix)
 
   -- In replays, dt can be zero when stopping etc.
@@ -349,6 +392,9 @@ function script.update(dt, mode, turnMix)
   local pitch = 0
   local roll  = 0
   local yaw   = 0
+
+  -- temporary target value for reuse
+  local target = 0
 
   -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
   -- reset stuff.
@@ -379,48 +425,35 @@ function script.update(dt, mode, turnMix)
   ac.debug('waiting', false)
 
     -- OLD SCRIPT BEHAVIOR (FIXED)
-    if settings.ANTICIPATION then
+    if settings.OTHER_TRACKING then
 
       --Sliding--
-      local sliding_mult = settings.ANTICIPATION*settings.SLIDING_LOOK_MULT
-      ac.debug('sliding', sliding_mult)
-      if sliding_mult ~= 0 and car.speedMs > 0.5 and car.gear >= 0 then
+      if settings.DRIFT_SCALE ~= 0 then
 
-        -- Get the unit vectors for the car's direction and look
-        local vh   = car.velocity:clone()/car.speedMs -- Unit vector in velocity direction
-        local look = neck.look:clone()                -- Neck look direction
-        --local axis = vh:cross(look)                   -- Rotation axis * sin(theta)
+        target=0
+        if car.speedMs > 0.5 and car.gear >= 0 then
 
-        -- Don't do this unless we're rolling at least somewhat forward
-        if math.dot(look,vh) > 0 then
-      
-          -- remove the vertical component from look
-          vh = vh - neck.up*neck.up:dot(vh)
-
-          -- Get the angle of rotation around neck.up
-          slidingHeadTurn = math.applyLag(slidingHeadTurn, soft_clip(math.cross(vh-look, neck.up):dot(neck.side), head.yaw.limit), 0.99, dt)
+          -- Get the unit vectors for the car's direction and look
+          local vh = car.velocity:clone()/car.speedMs -- Unit vector in velocity direction
           
-                 
-
-          -- local sliding = car.localVelocity.x / math.max(0.01, car.speedMs)
-          -- local slidingMult = math.abs(sliding) * sliding_mult
-          -- driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
-          -- driftState = math.saturate(driftState + (1 - sliding_mult)) -- - settings.SLIDE_FOLLOWING))
-          -- angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.97, dt)
-          -- local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
-          -- local thSpeed = 0.964 + angleMult / 50
-          -- slidingHeadTurn = math.applyLag(slidingHeadTurn, thMult, thSpeed, dt)
-        else
-          -- Get the angle of rotation around neck.up
-          slidingHeadTurn = math.applyLag(slidingHeadTurn, 0, 0.99, dt)
-        end
+          -- Don't do this unless we're moving at least somewhat forward
+          if math.dot(neck.look,vh) > 0 then
         
-      
-      else
-        slidingHeadTurn = math.applyLag(slidingHeadTurn, 0, 0.99, dt)
-      end
-      -- Now we do the rotation around the neck.up axis
-      small_rotation(neck.look, neck.up, slidingHeadTurn)
+            -- remove the vertical component from look
+            vh = vh - car.up*car.up:dot(vh)
+
+            -- Get the angle
+            target = soft_clip(math.cross(vh-look, car.up):dot(car.side)
+          end
+        end --forward
+
+        -- evolve head to angle
+        other_tracking.drift:evolve(dt,target)
+
+        -- add to yaw
+        yaw = yaw+other_tracking.drift.value
+
+      end --drift enabled
 
       --Steering--
       -- local steering_mult = settings.ANTICIPATION*settings.STEERING_MULT
@@ -465,7 +498,7 @@ function script.update(dt, mode, turnMix)
       --   -- Adds a little extra vertical to follow the track
       --   neck.look:addScaled(car.groundNormal, lookAheadY*turnMix*track_following_mult)
       -- end
-    end
+    end -- other tracking
 
   
   --   -- DISPLACEMENT PHYSICS
@@ -519,7 +552,7 @@ function script.update(dt, mode, turnMix)
   --     head.pitch:evolve_target(dt, 0)
 
   --     -- Prep for 4: Get the base value to add to the look and side vectors
-  --     pitch = head.pitch.value
+  --     pitch = pitch+head.pitch.value
 
   --   end
 
@@ -533,7 +566,7 @@ function script.update(dt, mode, turnMix)
   --     head.roll:evolve_target(dt, 0)
 
   --     -- Prep for 4: Get the base value to add to the look and side vectors
-  --     roll = head.roll.value
+  --     roll = roll+head.roll.value
   --   end
 
   --   -- Yaw dynamics
@@ -546,7 +579,7 @@ function script.update(dt, mode, turnMix)
   --     head.yaw:evolve_target(dt, 0)
 
   --     -- Prep for 4: Get the base value to add to the look and side vectors
-  --     yaw = head.yaw.value
+  --     yaw = yaw+head.yaw.value
   --   end
 
   --   -- 4: Extra rotations from pivots
@@ -563,6 +596,8 @@ function script.update(dt, mode, turnMix)
   last_clock     = os.clock()
 
   -- -- Do the rotations
+  small_rotation(neck.look, car.up, yaw)
+  small_rotation(neck.side, car.up, yaw)
   -- -- NOTE: This is an approximation, rotating the most important 2 vectors.
   -- --       We could try rotating all 3 and use a (costly) normalized angle rotation
   -- --       rather than distance to improve non-orthogonality?
