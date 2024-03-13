@@ -132,6 +132,114 @@ function small_rotation_xyz(x,y,z,axis,angle)
 end
 
 
+
+---------------------------------------------------------------
+-- FULL ROTATIONS USING QUATERNIONS: NEEDS CLEANUP
+---------------------------------------------------------------
+-- Define a quaternion class
+local quaternion = {}
+
+-- Create a new quaternion
+function quaternion:new(x, y, z, w)
+    local q = { x = x or 0, y = y or 0, z = z or 0, w = w or 1 }
+    setmetatable(q, self)
+    self.__index = self
+    return q
+end
+
+-- Normalize a quaternion
+function quaternion:normalize()
+    local mag = math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w)
+    self.x = self.x / mag
+    self.y = self.y / mag
+    self.z = self.z / mag
+    self.w = self.w / mag
+end
+
+-- Rotate a vector by a quaternion
+function quaternion:rotateVector(v)
+    local qv = { x = v.x, y = v.y, z = v.z, w = 0 }
+    local conjugate = { x = -self.x, y = -self.y, z = -self.z, w = self.w }
+
+    -- Calculate quaternion product
+    local rotated = {
+        x = self.w * qv.x + self.x * qv.w + self.y * qv.z - self.z * qv.y,
+        y = self.w * qv.y - self.x * qv.z + self.y * qv.w + self.z * qv.x,
+        z = self.w * qv.z + self.x * qv.y - self.y * qv.x + self.z * qv.w,
+        w = self.w * qv.w - self.x * qv.x - self.y * qv.y - self.z * qv.z
+    }
+
+    -- Calculate quaternion product with conjugate
+    local result = {
+        x = rotated.w * conjugate.x + rotated.x * conjugate.w + rotated.y * conjugate.z - rotated.z * conjugate.y,
+        y = rotated.w * conjugate.y - rotated.x * conjugate.z + rotated.y * conjugate.w + rotated.z * conjugate.x,
+        z = rotated.w * conjugate.z + rotated.x * conjugate.y - rotated.y * conjugate.x + rotated.z * conjugate.w,
+        w = rotated.w * conjugate.w - rotated.x * conjugate.x - rotated.y * conjugate.y - rotated.z * conjugate.z
+    }
+
+    return { x = result.x, y = result.y, z = result.z }
+end
+
+-- Function to rotate one vec3 about another vec3
+local function rotateAroundAxis(axis, point, angle)
+    local halfAngle = angle / 2
+    local sinHalfAngle = math.sin(halfAngle)
+    local axis = quaternion:new(axis.x * sinHalfAngle, axis.y * sinHalfAngle, axis.z * sinHalfAngle, math.cos(halfAngle))
+    axis:normalize()
+    local pointQuat = quaternion:new(point.x, point.y, point.z, 0)
+    local rotatedPoint = axis:rotateVector(pointQuat)
+    return rotatedPoint
+end
+
+-- Example usage:
+local axis = { x = 0, y = 0, z = 1 }   -- Axis of rotation (for example, the vector around which you want to rotate)
+local point = { x = 1, y = 0, z = 0 }  -- Point to be rotated
+local angle = math.rad(90)             -- Angle of rotation in radians
+
+local rotatedPoint = rotateAroundAxis(axis, point, angle)
+print(rotatedPoint.x, rotatedPoint.y, rotatedPoint.z)
+
+-----------------------------------------------------------------------------
+-- OTHER ANGLE STUFF: NEEDS CLEANUP
+-----------------------------------------------------------------------------
+-- Calculate the dot product of two vectors
+local function dot(v1, v2)
+  return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+end
+
+-- Calculate the magnitude of a vector
+local function length(v)
+  return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+end
+
+-- Calculate the angle between two vectors in radians
+local function angleBetween(v1, v2)
+  local dotProduct = dot(v1, v2)
+  local magnitudeProduct = length(v1) * length(v2)
+  
+  -- Ensure the denominator is not zero
+  if magnitudeProduct == 0 then
+      return 0 -- Or you can handle this case in any other way suitable for your application
+  end
+  
+  local cosTheta = dotProduct / magnitudeProduct
+  return math.acos(math.min(math.max(cosTheta, -1), 1)) -- Ensure acos input is within [-1, 1]
+end
+
+-- Example usage:
+local vec1 = { x = 1, y = 2, z = 3 }
+local vec2 = { x = -1, y = 0, z = 2 }
+
+local angle = angleBetween(vec1, vec2)
+print("Angle between vectors:", angle)
+
+------------------------------------------------------------------------
+
+
+
+
+
+
 -- Object to hold and evolve a dynamical variable with a spring and damper
 FilterSpring = {
     value        = 0,     -- Current value
@@ -340,11 +448,6 @@ local transient = {
   pitch = FilterHighPass:new(pitch_tau),
   roll  = FilterHighPass:new(roll_tau),
   yaw   = FilterHighPass:new(yaw_tau),
-}
-
--- Anticipatory and other tracking head motion
-local other_tracking = {
-  drift = FilterLowPass:new(settings.DRIFT_LAG)
 }
 
 -- Precomputed scale factors (doesn't save much time but oh well)
