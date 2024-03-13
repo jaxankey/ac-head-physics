@@ -157,7 +157,7 @@ function quaternion:normalize()
 end
 
 -- Rotate a vector by a quaternion
-function quaternion:rotateVector(v)
+function quaternion:rotate_vector(v)
     local qv = { x = v.x, y = v.y, z = v.z, w = 0 }
     local conjugate = { x = -self.x, y = -self.y, z = -self.z, w = self.w }
 
@@ -180,60 +180,33 @@ function quaternion:rotateVector(v)
     return { x = result.x, y = result.y, z = result.z }
 end
 
--- Function to rotate one vec3 about another vec3
-local function rotateAroundAxis(axis, point, angle)
-    local halfAngle = angle / 2
-    local sinHalfAngle = math.sin(halfAngle)
-    local axis = quaternion:new(axis.x * sinHalfAngle, axis.y * sinHalfAngle, axis.z * sinHalfAngle, math.cos(halfAngle))
-    axis:normalize()
-    local pointQuat = quaternion:new(point.x, point.y, point.z, 0)
-    local rotatedPoint = axis:rotateVector(pointQuat)
-    return rotatedPoint
+-- Function to rotate one unit vec3 about another unit vec3
+local function rotate_around_axis(axis, v, angle)
+    local a2 = angle / 2
+    local sin_a2 = math.sin(a2)
+    local axis = quaternion:new(axis.x * sin_a2, axis.y * sin_a2, axis.z * sin_a2, math.cos(a2))
+    --axis:normalize()
+    local v_quat = quaternion:new(v.x, v.y, v.z, 0)
+    local v_rotated = axis:rotate_vector(v_quat)
+    return vec3(v_rotated.x, v_rotated.y, v_rotated.z)
 end
 
--- Example usage:
-local axis = { x = 0, y = 0, z = 1 }   -- Axis of rotation (for example, the vector around which you want to rotate)
-local point = { x = 1, y = 0, z = 0 }  -- Point to be rotated
-local angle = math.rad(90)             -- Angle of rotation in radians
+-- Get the rotation axis and angle between vectors u1 and u2
+local function get_axis_and_angle_between(u1, u2)
 
-local rotatedPoint = rotateAroundAxis(axis, point, angle)
-print(rotatedPoint.x, rotatedPoint.y, rotatedPoint.z)
+  local minimum_length = 1e-10
+  local u1_length = math.min(u1:length(), minimum_length)
+  local u2_length = math.min(u2:length(), minimum_length)
+  local a = vec3(0,1,0) -- default for when vectors are too well aligned
 
------------------------------------------------------------------------------
--- OTHER ANGLE STUFF: NEEDS CLEANUP
------------------------------------------------------------------------------
--- Calculate the dot product of two vectors
-local function dot(v1, v2)
-  return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+  -- Get the axis*sin(theta)
+  local axis_sin_angle = math.cross(u1,u2)/(u1_length*u2_length)
+  local sin_angle = axis_sin_angle:length()
+  if math.abs(sin_angle) > minimum_length then a = axis_sin_angle:scale(1/sin_angle) end
+
+  -- Return the unit vector and angle (safely bounded)
+  return a, math.asin(math.min(math.max(sin_angle, -1), 1))
 end
-
--- Calculate the magnitude of a vector
-local function length(v)
-  return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-end
-
--- Calculate the angle between two vectors in radians
-local function angleBetween(v1, v2)
-  local dotProduct = dot(v1, v2)
-  local magnitudeProduct = length(v1) * length(v2)
-  
-  -- Ensure the denominator is not zero
-  if magnitudeProduct == 0 then
-      return 0 -- Or you can handle this case in any other way suitable for your application
-  end
-  
-  local cosTheta = dotProduct / magnitudeProduct
-  return math.acos(math.min(math.max(cosTheta, -1), 1)) -- Ensure acos input is within [-1, 1]
-end
-
--- Example usage:
-local vec1 = { x = 1, y = 2, z = 3 }
-local vec2 = { x = -1, y = 0, z = 2 }
-
-local angle = angleBetween(vec1, vec2)
-print("Angle between vectors:", angle)
-
-------------------------------------------------------------------------
 
 
 
@@ -544,30 +517,32 @@ function script.update(dt, mode, turnMix)
       --Sliding--
       if settings.DRIFT_SCALE ~= 0 then
 
+        local threshold = 1     -- Speed below which the effect is scaling down linearly with speed
+        local min_speed = 1e-9  -- Minimum speed at which the vision just aligns with the car
+
         -- Find the unit vector in the direction we're actually going, checking for low-velocity
+        local vhat = car.look -- default to facing forward
+        if car.speedMs > min_speed then vhat = car.velocity / car.speedMs end
 
-        -- Find the unit vector about which look must rotate to align
+        -- Find the unit vector about which look must rotate to align, and the angle required to get there
+        local axis, angle = get_axis_and_angle_between(tracking.look, vhat)
 
-        -- Find the angle required to align, scaled and soft-clipped to limits
+        -- Reduce the angle we will actually rotate, scaling the effect down at low velocities
+        angle = angle * soft_clip(settings.DRIFT_SCALE * car.speedMs / threshold, settings.DRIFT_SCALE)
 
-        -- Rotate all three vectors about this axis by this much
-
-
-        -- local sliding = car.localVelocity.x / math.max(3, car.speedMs)
-        -- local slidingMult = math.abs(sliding) * cfg.SLIDING_LOOK_MULT
-        -- driftState = slidingMult > 0.2 and driftState - dt/2 or driftState + dt/4
-        -- driftState = math.saturate(driftState + (1 - cfg.SLIDE_FOLLOWING))
-        -- angleMult = math.applyLag(angleMult, slidingMult * 0.5, 0.99, dt)
-        -- local thMult = math.max(slidingMult - 0.2 * driftState, 0) * math.sign(sliding)
-        -- local thSpeed = 0.964 + angleMult / 50
-        -- turnHead = math.applyLag(turnHead, thMult, thSpeed, dt)
-        -- local powDriftState = math.pow(driftState, 2)
+        -- Rotate all three car axes about this axis by this angle
+        tracking.look = rotate_around_axis(axis, tracking.look, angle)
+        tracking.side = rotate_around_axis(axis, tracking.side, angle)
+        tracking.up   = rotate_around_axis(axis, tracking.up,   angle)
 
       end --Sliding
 
       --Track Following--
       if settings.TRACK_FOLLOWING_MULT then
       
+        local threshold = 1     -- Speed below which the effect is scaling down linearly with speed
+        -- soft_clip(settings.TRACK_FOLLOWING_MULT * car.speedMs / threshold, settings.TRACK_FOLLOWING_MULT)
+
         -- Get the target unit vector for this part of the road in the plane defined by car.up, and the angle required to get there
 
         -- Rotate all three vectors about car.up by the scaled angle
@@ -591,10 +566,9 @@ function script.update(dt, mode, turnMix)
       --Steering--
       if settings.STEERING_MULT ~= 0 then
 
-        -- Get the steering wheel angle and convert this to a look angle
+        -- Get the steering wheel angle and convert    to a look angle
 
         -- Rotate all three vectors about the car.up axis by the appropriate amount
-
 
         -- local steering_mult = settings.ANTICIPATION*settings.STEERING_MULT
         -- if steering_mult ~= 0 then
@@ -608,23 +582,40 @@ function script.update(dt, mode, turnMix)
         --   steerSmooth = math.applyLag(steerSmooth, targetAngle * driftState^2, 0.85 - steerSpeed, dt)
       end --Steering
 
-      --Horizon Roll--
-      if settings.HORIZON_ROLL_MULT ~= 0 then
-        
-        -- Figure out the angle we must rotate about tracking.look to remove the lateral components of tracking.up
-
-        -- Rotate tracking.up and tracking.side about tracking.look by this amount (scaled)
-
-      end --Horizon Roll
-
       --Horizon Pitch--
       if settings.HORIZON_PITCH_MULT ~= 0 then
+        
+        -- Construct a vector that is tracking.look but with no vertical component
+        local v_target = vec3(target.look.x, 0, target.look.z)
 
-        -- Figure out the angle we must rotate about tracking.side to eliminate the vertical component of tracking.look.
+        -- Get the axis and angle between look at v_target
+        local axis, angle = get_axis_and_angle_between(tracking.look, v_target)
+        angle = angle*settings.HORIZON_PITCH_MULT
 
-        -- Rotate tracking.up and tracking.look about tracking.side by this amount (scaled)
+        -- Rotate all three vectors to compensate
+        tracking.look = rotate_around_axis(axis, tracking.look, angle)
+        tracking.side = rotate_around_axis(axis, tracking.side, angle)
+        tracking.up   = rotate_around_axis(axis, tracking.up,   angle)
+      end --Horizon Pitch
 
-      end --Horizon pitch
+      --Horizon Roll--
+      if settings.HORIZON_ROLL_MULT ~= 0 then
+
+        -- Get a vector that is perpendicular to tracking.look and in the ground plane out to the side
+        local v_flat = math.cross(tracking.look, vec3(0,1,0))
+
+        -- Get a vector perpendicular to this and tracking.look; this is where we wish to roll the car to
+        local v_target = math.cross(tracking.look, v_flat)
+
+        -- Get the angle required to align tracking.up with v_target
+        local axis, angle = get_axis_and_angle_between(tracking.up, v_target)
+        angle = angle*settings.HORIZON_ROLL_MULT
+
+        -- Rotate tracking.up and tracking.side about the look axis by this amount (scaled)
+        tracking.side = rotate_around_axis(axis, tracking.side, angle)
+        tracking.up   = rotate_around_axis(axis, tracking.up,   angle)
+
+      end --Horizon roll
 
       -- Set the neck vectors to the tracking vectors so everything is aligned (not necessary if tracking disabled)
       neck.look:copyFrom(tracking.look)
