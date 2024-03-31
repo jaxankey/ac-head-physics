@@ -1,62 +1,71 @@
 local scriptSettings = ac.INIConfig.scriptSettings()
-local settings = scriptSettings:mapSection('SETTINGS', {
 
+local globalSettings = scriptSettings:mapSection('GLOBAL ADJUSTMENTS', {
   GLOBAL_FREQUENCY_SCALE = 1,
-  GLOBAL_DAMPING_SCALE   = 1,
-
-  -- Set to zero to disable, 1 to enable
-  HORIZONTAL_ENABLED = 1,
-  VERTICAL_ENABLED   = 1,
-  FORWARD_ENABLED    = 1,
-  PITCH_ENABLED      = 1,
-  ROLL_ENABLED       = 1,
-  YAW_ENABLED        = 1,
-
-  -- Overall scale on position effects. 
-  POSITION_SCALE = 1,
-
-  -- Front-back motion (Giggity axis)
-  FORWARD_SCALE  = 1,          -- Amount of response to front-back G-forces (giggity scale)
-  FORWARD_LIMIT  = 0.2,        -- Maximum head deviation from front-back G-forces (meters). Also adds some nonlinear spring.
-  FORWARD_FREQUENCY = 1.0,     -- Resonance frequency (Hz); lower for more smoothing
-  FORWARD_DAMPING   = 1,       -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
-  FORWARD_RECENTER_TIME = 2,   -- Time scale for recentering after a change in acceleration. 0 to disable recentering
-  FORWARD_PITCH_PIVOT = 0.25,  -- Distance (m) between head and effective pivot point (somewhere in your chest or waist), which links displacement to rotation. Set to 0 to disable
-
-  -- Left-right motion (Roxbury axis)
-  HORIZONTAL_SCALE  = 1,
-  HORIZONTAL_LIMIT  = 0.05,
-  HORIZONTAL_FREQUENCY = 1.0,
-  HORIZONTAL_DAMPING   = 1,
-  HORIZONTAL_RECENTER_TIME = 2,
-  HORIZONTAL_ROLL_PIVOT = 0.25, -- Same as FORWARD_PITCH_PIVOT but head tilting
-  HORIZONTAL_YAW_PIVOT  = 10,   -- Locks eyes this distance ahead of the car when shifting
-
-  -- Vertical motion (Bobblehead axis)
-  VERTICAL_SCALE = 1,
-  VERTICAL_LIMIT = 0.04,
-  VERTICAL_FREQUENCY = 1.0,
-  VERTICAL_DAMPING = 1,
-  VERTICAL_RECENTER_TIME = 2,
-
-  -- Head tilting forward
-  PITCH_TRACKING  = 1, -- Additional high-pass on car rotation (0 or 1)
-  PITCH_FREQUENCY = 3,
-  PITCH_DAMPING   = 1,
-  PITCH_LIMIT     = 30,   -- degrees
-
-  -- Head rolling with car
-  ROLL_TRACKING    = 1,
-  ROLL_FREQUENCY = 3,
-  ROLL_DAMPING   = 1,
-  ROLL_LIMIT     = 40,      -- degrees
-
-  -- Let's the car turn under your head to kill yaw wobbles (yawbbles). Takes some getting used to!
-  YAW_TRACKING  = 1,
-  YAW_FREQUENCY = 0.5,    -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
-  YAW_DAMPING   = 1,
-  YAW_LIMIT     = 10,     -- degrees
+  GLOBAL_DAMPING_SCALE   = 1.0
 })
+
+local pitchSettings = scriptSettings:mapSection('PITCH PHYSICS', {
+  PITCH_ENABLED   = 1,
+  PITCH_FREQUENCY = 0.7,
+  PITCH_DAMPING   = 1.0,
+  PITCH_LIMIT     = 30, -- degrees
+  PITCH_TRACKING  = 1,
+})
+local rollSettings = scriptSettings:mapSection('ROLL PHYSICS', {
+  ROLL_ENABLED    = 1,
+  ROLL_FREQUENCY  = 1,
+  ROLL_DAMPING    = 1.0,
+  ROLL_LIMIT      = 30, -- degrees
+  ROLL_TRACKING   = 0,
+})
+local yawSettings = scriptSettings:mapSection('YAW PHYSICS', {
+  YAW_ENABLED     = 0,
+  YAW_FREQUENCY   = 1.0, -- Filter frequency for wobbles (faster wobbles are reduced). The puke-wobbles are often ~1-2 Hz.
+  YAW_DAMPING     = 1,
+  YAW_LIMIT       = 30, -- degrees
+  YAW_TRACKING    = 1,
+})
+
+local forwardSettings = scriptSettings:mapSection('FORWARD PHYSICS', {
+  FORWARD_ENABLED      = 1,
+  FORWARD_FREQUENCY    = 0.8,  -- Resonance frequency (Hz); lower for more smoothing
+  FORWARD_DAMPING      = 1.0,  -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
+  FORWARD_LIMIT        = 0.25, -- Maximum head deviation from front-back G-forces (meters). Also adds some nonlinear spring.
+})
+
+local horizontalSettings = scriptSettings:mapSection('HORIZONTAL PHYSICS', {
+  HORIZONTAL_ENABLED   = 1,
+  HORIZONTAL_FREQUENCY = 1.3,
+  HORIZONTAL_DAMPING   = 1.0,
+  HORIZONTAL_LIMIT     = 0.12,
+})
+
+local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
+  VERTICAL_ENABLED     = 1,
+  VERTICAL_FREQUENCY   = 1,
+  VERTICAL_DAMPING     = 1.0,
+  VERTICAL_LIMIT       = 0.14,
+})
+
+local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
+  ADVANCED_MODE            = 0,
+
+  FORWARD_PITCH_PIVOT      = 0, -- Distance (m) between head and effective pivot point (somewhere in your chest or waist), which links displacement to rotation. Set to 0 to disable
+  HORIZONTAL_ROLL_PIVOT    = 0.25, -- Same as FORWARD_PITCH_PIVOT but head tilting
+  HORIZONTAL_YAW_PIVOT     = 0,   -- Locks eyes this distance ahead of the car when shifting
+
+  FORWARD_RECENTER_TIME    = 0,    -- Time scale for recentering after a change in acceleration. 0 to disable recentering
+  HORIZONTAL_RECENTER_TIME = 0,
+  VERTICAL_RECENTER_TIME   = 0,
+
+  FORWARD_SCALE            = 1,  -- Amount of response to front-back G-forces (giggity scale)
+  HORIZONTAL_SCALE         = 1,
+  VERTICAL_SCALE           = 1,
+
+  POSITION_SCALE           = 1
+})
+
 
 -- Constants
 local pi = 3.1415926535
@@ -107,8 +116,8 @@ function FilterSpring:new(frequency, damping, limit)
     local instance = setmetatable({}, { __index = FilterSpring })
 
     -- Initialization
-    instance.frequency = frequency*settings.GLOBAL_FREQUENCY_SCALE
-    instance.damping   = damping  *settings.GLOBAL_DAMPING_SCALE
+    instance.frequency = math.min(frequency*globalSettings.GLOBAL_FREQUENCY_SCALE, 9.7) -- Keep the frequency below 10 Hz to avoid artifacts (still may be some at low frame rate)
+    instance.damping   = damping  *globalSettings.GLOBAL_DAMPING_SCALE
     if limit then instance.limit = limit end
 
     return instance
@@ -151,6 +160,8 @@ function FilterSpring:evolve_acceleration(dt, a)
   local v  = self.velocity
   local f  = self.frequency
   local g  = self.damping
+
+
 
   -- Update the velocity from the acceleration (damping and spring)
   self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*self.value)*dt
@@ -226,12 +237,12 @@ end
 
 -- Dynamical variables for head position
 local head = {
-  x     = FilterSpring:new(settings.HORIZONTAL_FREQUENCY, settings.HORIZONTAL_DAMPING, settings.HORIZONTAL_LIMIT),
-  y     = FilterSpring:new(settings.VERTICAL_FREQUENCY  , settings.VERTICAL_DAMPING  , settings.VERTICAL_LIMIT),
-  z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
-  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     , settings.PITCH_LIMIT*pi/180.0),
-  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      , settings.ROLL_LIMIT *pi/180.0),
-  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
+  x     = FilterSpring:new(horizontalSettings.HORIZONTAL_FREQUENCY, horizontalSettings.HORIZONTAL_DAMPING, horizontalSettings.HORIZONTAL_LIMIT),
+  y     = FilterSpring:new(  verticalSettings.VERTICAL_FREQUENCY  ,   verticalSettings.VERTICAL_DAMPING  ,   verticalSettings.VERTICAL_LIMIT),
+  z     = FilterSpring:new(   forwardSettings.FORWARD_FREQUENCY   ,    forwardSettings.FORWARD_DAMPING   ,    forwardSettings.FORWARD_LIMIT),
+  pitch = FilterSpring:new(pitchSettings.PITCH_FREQUENCY     , pitchSettings.PITCH_DAMPING     , pitchSettings.PITCH_LIMIT*pi/180.0),
+  roll  = FilterSpring:new( rollSettings.ROLL_FREQUENCY      ,  rollSettings.ROLL_DAMPING      ,  rollSettings.ROLL_LIMIT *pi/180.0),
+  yaw   = FilterSpring:new(  yawSettings.YAW_FREQUENCY       ,   yawSettings.YAW_DAMPING       ,   yawSettings.YAW_LIMIT  *pi/180.0),
 }
 
 
@@ -241,46 +252,36 @@ local head = {
 local pitch_tau = 0
 local roll_tau  = 0
 local yaw_tau   = 0
-if settings.PITCH_TRACKING > 0 then 
-  pitch_tau = 1/(2*pi*settings.PITCH_FREQUENCY) 
+if pitchSettings.PITCH_TRACKING > 0 then 
+  pitch_tau =    1/(2*pi*head.pitch.frequency) 
   head.pitch.damping   = head.pitch.damping*0.5   -- Optimization stabilization frequency dependence
   head.pitch.frequency = head.pitch.frequency*1.2 -- Makes the responses equal closer to the user-set frequency
 end
-if settings.ROLL_TRACKING  > 0 then 
-  roll_tau  = 1/(2*pi*settings.ROLL_FREQUENCY)
+if rollSettings.ROLL_TRACKING  > 0 then 
+  roll_tau    = 1/(2*pi*head.roll.frequency)
   head.roll.damping   = head.roll.damping*0.5
   head.roll.frequency = head.roll.frequency*1.2
 end
-if settings.YAW_TRACKING > 0 then
-  yaw_tau = 1/(2*pi*settings.YAW_FREQUENCY)
+if yawSettings.YAW_TRACKING > 0 then
+  yaw_tau    = 1/(2*pi*head.yaw.frequency)
   head.yaw.damping   = head.yaw.damping*0.5
   head.yaw.frequency = head.yaw.frequency*1.2
 end
 
 -- Dyanmical variables for calculating acceleration transients
 local transient = {
-  x     = FilterHighPass:new(settings.HORIZONTAL_RECENTER_TIME),
-  y     = FilterHighPass:new(settings.VERTICAL_RECENTER_TIME),
-  z     = FilterHighPass:new(settings.FORWARD_RECENTER_TIME),
+  x     = FilterHighPass:new(advancedSettings.HORIZONTAL_RECENTER_TIME),
+  y     = FilterHighPass:new(advancedSettings.VERTICAL_RECENTER_TIME),
+  z     = FilterHighPass:new(advancedSettings.FORWARD_RECENTER_TIME),
   pitch = FilterHighPass:new(pitch_tau),
   roll  = FilterHighPass:new(roll_tau),
   yaw   = FilterHighPass:new(yaw_tau),
 }
 
--- Dynamical variables for head position
-local head = {
-  x     = FilterSpring:new(settings.HORIZONTAL_FREQUENCY, settings.HORIZONTAL_DAMPING, settings.HORIZONTAL_LIMIT),
-  y     = FilterSpring:new(settings.VERTICAL_FREQUENCY  , settings.VERTICAL_DAMPING  , settings.VERTICAL_LIMIT),
-  z     = FilterSpring:new(settings.FORWARD_FREQUENCY   , settings.FORWARD_DAMPING   , settings.FORWARD_LIMIT),
-  pitch = FilterSpring:new(settings.PITCH_FREQUENCY     , settings.PITCH_DAMPING     , settings.PITCH_LIMIT*pi/180.0),
-  roll  = FilterSpring:new(settings.ROLL_FREQUENCY      , settings.ROLL_DAMPING      , settings.ROLL_LIMIT *pi/180.0),
-  yaw   = FilterSpring:new(settings.YAW_FREQUENCY       , settings.YAW_DAMPING       , settings.YAW_LIMIT  *pi/180.0),
-}
-
 -- Precomputed scale factors (doesn't save much time but oh well)
-local horizontal_scale = settings.HORIZONTAL_SCALE*settings.POSITION_SCALE
-local vertical_scale   = settings.VERTICAL_SCALE  *settings.POSITION_SCALE
-local forward_scale    = settings.FORWARD_SCALE   *settings.POSITION_SCALE
+local horizontal_scale = advancedSettings.HORIZONTAL_SCALE*advancedSettings.POSITION_SCALE
+local vertical_scale   = advancedSettings.VERTICAL_SCALE  *advancedSettings.POSITION_SCALE
+local forward_scale    = advancedSettings.FORWARD_SCALE   *advancedSettings.POSITION_SCALE
 
 -- Several quantities we need to remember from the previous call of update()
 local last_car_look = vec3(0,0,1)
@@ -288,6 +289,9 @@ local last_car_up   = vec3(0,1,0)
 local first_run     = true
 local last_car_index = -1
 local last_clock = os.clock()
+local lastFrameIndex = ac.getSim().replayCurrentFrame
+
+
 function script.update(dt, mode, turnMix)
 
   -- Stuff I learned:
@@ -298,16 +302,19 @@ function script.update(dt, mode, turnMix)
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
   -- In replays, dt can be zero when stopping etc.
-  if dt == 0 then dt = 0.1 end
+  -- ac.debug('dt intial', dt)
+  if dt == 0 then return end
 
   -- Thes angles we will eventually become neck rotations away from colinear with the car
   local pitch = 0
   local roll  = 0
   local yaw   = 0
 
+  local frameIndexChange = math.abs(ac.getSim().replayCurrentFrame - lastFrameIndex)
+
   -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
   -- reset stuff.
-  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 then -- or car.speedMs < 0.1 then
+  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 or frameIndexChange > 1 then -- or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -346,17 +353,17 @@ function script.update(dt, mode, turnMix)
     -- The only other option is to calculate acceleration manually with two steps of 
     -- different dt, which may introduce lag, but we could also maybe implement an 
     -- accumulation approach like for rotations.
-    if settings.HORIZONTAL_ENABLED == 1 then
+    if horizontalSettings.HORIZONTAL_ENABLED == 1 then
       transient.x:evolve(dt, car.acceleration.x)
       head.x:evolve_acceleration(dt, horizontal_scale*transient.x.value)
       neck.position:addScaled(car.side, -head.x.value)
     end
-    if settings.VERTICAL_ENABLED == 1 then
+    if verticalSettings.VERTICAL_ENABLED == 1 then
       transient.y:evolve(dt, car.acceleration.y)
       head.y:evolve_acceleration(dt, vertical_scale*transient.y.value)
       neck.position:addScaled(car.up, -head.y.value)
     end
-    if settings.FORWARD_ENABLED == 1 then
+    if forwardSettings.FORWARD_ENABLED == 1 then
       transient.z:evolve(dt, car.acceleration.z)
       head.z:evolve_acceleration(dt, forward_scale*transient.z.value)
       neck.position:addScaled(car.look, -head.z.value)
@@ -371,7 +378,7 @@ function script.update(dt, mode, turnMix)
       -- Note we do the /dt process so that variable frame rate has a smoother evolution.
 
     -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
-    if settings.PITCH_ENABLED == 1 then
+    if pitchSettings.PITCH_ENABLED == 1 then
       -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
       head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
         math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
@@ -385,7 +392,7 @@ function script.update(dt, mode, turnMix)
     end
 
     -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
-    if settings.ROLL_ENABLED == 1 then
+    if rollSettings.ROLL_ENABLED == 1 then
       -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
       head.roll.value = head.roll.value + transient.roll:evolve(dt,
         math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
@@ -398,7 +405,7 @@ function script.update(dt, mode, turnMix)
     end
 
     -- Yaw dynamics
-    if settings.YAW_ENABLED == 1 then
+    if yawSettings.YAW_ENABLED == 1 then
       -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
       head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
         math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
@@ -411,9 +418,9 @@ function script.update(dt, mode, turnMix)
     end
 
     -- 4: Extra rotations from pivots
-    if settings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/settings.FORWARD_PITCH_PIVOT   end
-    if settings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/settings.HORIZONTAL_ROLL_PIVOT end
-    if settings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/settings.HORIZONTAL_YAW_PIVOT  end
+    if advancedSettings.FORWARD_PITCH_PIVOT   ~= 0 then pitch = pitch - head.z.value/advancedSettings.FORWARD_PITCH_PIVOT   end
+    if advancedSettings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/advancedSettings.HORIZONTAL_ROLL_PIVOT end
+    if advancedSettings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/advancedSettings.HORIZONTAL_YAW_PIVOT  end
 
   end
 
@@ -422,6 +429,7 @@ function script.update(dt, mode, turnMix)
   last_car_up    = car.up  :clone()
   last_car_index = car.index
   last_clock     = os.clock()
+  lastFrameIndex = ac.getSim().replayCurrentFrame
 
   -- Do the rotations
   -- NOTE: This is an approximation, rotating the most important 2 vectors.
@@ -446,6 +454,9 @@ function script.update(dt, mode, turnMix)
   -- ac.debug('look-up overlap',   dot(neck.look, neck.up))
   -- ac.debug('look-side overlap', dot(neck.look, neck.side))
   -- ac.debug('side-up overlap',   dot(neck.side, neck.up))
+  -- ac.debug('dt', dt)
+  -- ac.debug('neck look', neck.look)
+  -- ac.debug('car look', car.look)
 end
 
 
