@@ -63,6 +63,9 @@ local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   HORIZONTAL_SCALE         = 1,
   VERTICAL_SCALE           = 1,
 
+  ROTATION_RATE_LIMIT      = 0.1,
+  DISPLACEMENT_RATE_LIMIT  = 0.1,
+
   POSITION_SCALE           = 1
 })
 
@@ -161,10 +164,10 @@ function FilterSpring:evolve_acceleration(dt, a)
   local f  = self.frequency
   local g  = self.damping
 
-
-
   -- Update the velocity from the acceleration (damping and spring)
   self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*self.value)*dt
+
+  ac.debug('Displacement Step', self.velocity*dt)
 
   -- Update the position with this velocity, and soft-clip it
   local start_value = self.value
@@ -283,6 +286,10 @@ local horizontal_scale = advancedSettings.HORIZONTAL_SCALE*advancedSettings.POSI
 local vertical_scale   = advancedSettings.VERTICAL_SCALE  *advancedSettings.POSITION_SCALE
 local forward_scale    = advancedSettings.FORWARD_SCALE   *advancedSettings.POSITION_SCALE
 
+-- Per-frame limits
+local     rotation_rate_limit = advancedSettings.ROTATION_RATE_LIMIT
+local displacement_rate_limit = advancedSettings.DISPLACEMENT_RATE_LIMIT
+
 -- Several quantities we need to remember from the previous call of update()
 local last_car_look = vec3(0,0,1)
 local last_car_up   = vec3(0,1,0)
@@ -342,12 +349,12 @@ function script.update(dt, mode, turnMix)
     -- the recenter time is set to zero, in which case we just use acceleration),
     -- then evolve the position under this acceleration and displace the head.
     --
-    -- Note car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
+    -- car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
     --  x = car.side
     --  y = car.up
     --  z = car.look
     --
-    -- Note using car.acceleration has the disadvantage that the physics engine doesn't
+    -- IMPORTANT: Using car.acceleration has the disadvantage that the physics engine doesn't
     -- coincide with the frame rate, which can cause jitters when frame rate is low. 
     -- These are not as noticeable for center-of-mass motion, as much. 
     -- The only other option is to calculate acceleration manually with two steps of 
