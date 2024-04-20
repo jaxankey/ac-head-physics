@@ -122,7 +122,7 @@ function FilterSpring:new(frequency, damping, limit)
 
     -- Initialization
     instance.frequency = math.min(frequency*globalSettings.GLOBAL_FREQUENCY_SCALE, 9.7) -- Keep the frequency below 10 Hz to avoid artifacts (still may be some at low frame rate)
-    instance.damping   = damping  *globalSettings.GLOBAL_DAMPING_SCALE
+    instance.damping   = math.min(damping  *globalSettings.GLOBAL_DAMPING_SCALE  , 1.0) -- Damping above 1 causes weirdness.
     if limit then instance.limit = limit end
 
     return instance
