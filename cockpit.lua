@@ -62,11 +62,9 @@ local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   FORWARD_SCALE            = 1,  -- Amount of response to front-back G-forces (giggity scale)
   HORIZONTAL_SCALE         = 1,
   VERTICAL_SCALE           = 1,
-
-  ROTATION_STEP_LIMIT      = 0.1,
-  DISPLACEMENT_STEP_LIMIT  = 0.1,
-
-  POSITION_SCALE           = 1
+  POSITION_SCALE           = 1,
+  ROTATION_STEP_LIMIT      = 0.5,
+  DISPLACEMENT_STEP_LIMIT  = 0.5,
 })
 
 
@@ -130,57 +128,33 @@ function FilterSpring:new(frequency, damping, limit)
     return instance
 end
 
--- Function to evolve from the current value to the target value.
--- dt is the time step in seconds, assumed to be small.
-function FilterSpring:evolve_target_rotation(dt, target)
-
-    -- Update the input
-    self.target = target
-
-    -- Get the deviation from the target
-    local dx = self.value - self.target
-    local v  = self.velocity
-    local f  = self.frequency
-    local g  = self.damping
-
-    -- Update the velocity from the acceleration (damping and spring)
-    self.velocity = v - (4*pi*g*f*v + pi24*f*f*dx)*dt
-
-    --ac.debug('test rot', soft_clip(self.velocity*dt, rotation_step_limit))
-
-    -- Update the position with this (soft-clipped) velocity, and soft clip it
-    local start_value = self.value
-    self.value = soft_clip(self.value + soft_clip(self.velocity*dt, rotation_step_limit), self.limit, self.target)
-
-    -- Soft clip the velocity too as we approach the boundary
-    self.velocity = (self.value-start_value)/dt
-
-    -- May as well return it
-    return self.value
+-- Returns the acceleration given displacement from equilibrium dx and velocity v
+function FilterSpring:get_derivatives(x, v, a)
+  return v, -4*pi*self.damping*self.frequency*v - pi24*self.frequency*self.frequency*x + a
 end
 
--- Function to evolve using an applied acceleration.
--- dt is the time step in seconds, assumed to be small.
-function FilterSpring:evolve_acceleration_displacement(dt, a)
+function FilterSpring:evolve(dt, target, acceleration)
 
-  -- The target in this case is always zero.
+  -- If default values are 0
+  if target       == nil then target       = 0 end
+  if acceleration == nil then acceleration = 0 end
+
+  -- Update the input
+  self.target = target
 
   -- Get the deviation from the target
-  local v  = self.velocity
-  local f  = self.frequency
-  local g  = self.damping
+  local x = self.value - self.target
+  local v = self.velocity
 
-  -- Update the velocity from the acceleration (damping and spring)
-  self.velocity = v + (a - 4*pi*g*f*v - pi24*f*f*self.value)*dt
+  -- Runge-Kutta 4th order parameters
+  local k1x, k1v = self:get_derivatives(x,            v,            acceleration)
+  local k2x, k2v = self:get_derivatives(x+0.5*dt*k1x, v+0.5*dt*k1v, acceleration)
+  local k3x, k3v = self:get_derivatives(x+0.5*dt*k2x, v+0.5*dt*k2v, acceleration)
+  local k4x, k4v = self:get_derivatives(x+    dt*k3x, v+    dt*k3v, acceleration)
 
-  --ac.debug('Displacement Step', self.velocity*dt)
-
-  -- Update the position with this velocity, and soft-clip it
-  local start_value = self.value
-  self.value = soft_clip(self.value + soft_clip(self.velocity*dt, displacement_step_limit), self.limit, self.target)
-
-  -- Soft clip the velocity too
-  self.velocity = (self.value-start_value)/dt
+  -- Update the value
+  self.value    = soft_clip(self.value    + soft_clip((dt/6)*(k1x+2*k2x+2*k3x+k4x), rotation_step_limit), self.limit, self.target)
+  self.velocity =           self.velocity +           (dt/6)*(k1v+2*k2v+2*k3v+k4v)
 
   -- May as well return it
   return self.value
@@ -332,7 +306,7 @@ function script.update(dt, mode, turnMix)
 
   -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
   -- reset stuff.
-  -- Note if the framerate of a replay is higher than the rendered rate, it can cause frameIndexChange > 1
+  -- Note if the framerate of a replay is higher than the rendered rate, it can cause frameIndexChange = 2 or 3
   if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 or frameIndexChange > 3 then -- or car.speedMs < 0.1 then
     head.pitch:reset()
     head.roll:reset()
@@ -374,17 +348,17 @@ function script.update(dt, mode, turnMix)
     -- accumulation approach like for rotations.
     if horizontalSettings.HORIZONTAL_ENABLED == 1 then
       transient.x:evolve(dt, car.acceleration.x, displacement_step_limit)
-      head.x:evolve_acceleration_displacement(dt, horizontal_scale*transient.x.value)
+      head.x:evolve(dt, 0, horizontal_scale*transient.x.value)
       neck.position:addScaled(car.side, -head.x.value)
     end
     if verticalSettings.VERTICAL_ENABLED == 1 then
       transient.y:evolve(dt, car.acceleration.y, displacement_step_limit)
-      head.y:evolve_acceleration_displacement(dt, vertical_scale*transient.y.value)
+      head.y:evolve(dt, 0, vertical_scale*transient.y.value)
       neck.position:addScaled(car.up, -head.y.value)
     end
     if forwardSettings.FORWARD_ENABLED == 1 then
       transient.z:evolve(dt, car.acceleration.z, displacement_step_limit)
-      head.z:evolve_acceleration_displacement(dt, forward_scale*transient.z.value)
+      head.z:evolve(dt, 0, forward_scale*transient.z.value)
       neck.position:addScaled(car.look, -head.z.value)
     end
 
@@ -403,7 +377,7 @@ function script.update(dt, mode, turnMix)
         math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
 
       -- 3: Let the head try to relax back to center by harmonic motion.
-      head.pitch:evolve_target_rotation(dt, 0)
+      head.pitch:evolve(dt, 0, 0)
 
       -- Prep for 4: Get the base value to add to the look and side vectors
       pitch = head.pitch.value
@@ -417,7 +391,7 @@ function script.update(dt, mode, turnMix)
         math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
 
       -- 3: Let the head try to relax back to center by harmonic motion.
-      head.roll:evolve_target_rotation(dt, 0)
+      head.roll:evolve(dt, 0, 0)
 
       -- Prep for 4: Get the base value to add to the look and side vectors
       roll = head.roll.value
@@ -430,7 +404,7 @@ function script.update(dt, mode, turnMix)
         math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
 
       -- 3: Let the head try to relax back to center by harmonic motion.
-      head.yaw:evolve_target_rotation(dt, 0)
+      head.yaw:evolve(dt, 0, 0)
 
       -- Prep for 4: Get the base value to add to the look and side vectors
       yaw = head.yaw.value
