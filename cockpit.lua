@@ -339,10 +339,10 @@ function script.update(dt, mode, turnMix)
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
   -- REUSABLE VARIABLES
-  local cos_angle, sin_angle, axis, angle, target
+  local cos_angle, sin_angle, angle, target
 
   ------------------------------------------------------------------
-  -- HORIZON LOCK
+  -- HORIZON PITCH
   if horizonSettings.HORIZON_PITCH ~= 0 then
 
     --  1. Find the unit vector intersecting the world's ground plane (normal 0,1,0), and car.side with a cross product
@@ -365,9 +365,9 @@ function script.update(dt, mode, turnMix)
     rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
     rotate_about_axis(neck.side, car.side, cos_angle, sin_angle)
     rotate_about_axis(neck.up  , car.side, cos_angle, sin_angle)
+  end -- HORIZON PITCH
 
-  end
-
+  -- HORIZON ROLL
   if horizonSettings.HORIZON_ROLL ~= 0 then
 
     -- Similar to pitch, but use car.look instead of car.side to rotate
@@ -378,7 +378,7 @@ function script.update(dt, mode, turnMix)
     else target = car.side:clone() end
 
     -- 2. Find teh angle of rotation about car.look that aligns car.side with the target
-    cos_anlge = math.dot(car.side, target)
+    cos_angle = math.dot(car.side, target)
     sin_angle = math.dot(car.up  , target)
     angle = horizonSettings.HORIZON_ROLL * math.atan(sin_angle, cos_angle)
 
@@ -388,7 +388,7 @@ function script.update(dt, mode, turnMix)
     rotate_about_axis(neck.look, car.look, cos_angle, sin_angle)
     rotate_about_axis(neck.side, car.look, cos_angle, sin_angle)
     rotate_about_axis(neck.up  , car.look, cos_angle, sin_angle)
-  end
+  end -- HORIZON ROLL
 
 
   ------------------------------------------------------------------
