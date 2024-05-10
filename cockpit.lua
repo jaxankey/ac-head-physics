@@ -341,14 +341,7 @@ function script.update(dt, mode, turnMix)
   -- REUSABLE VARIABLES
   local cos_angle, sin_angle, target
 
-  -- Variables for rotation about car axes for each of the effects
-  local pitch_horizon   = 0
-  local roll_horizon    = 0
-  local yaw_lookahead   = 0
-  local yaw_drift_track = 0 -- Just the drift and track follow components
-
-
-
+  
   -----------------------------------------------------------------
   -- HEAD PHYSICS
   -- These angles we will eventually become neck rotations away from colinear with the car
@@ -502,7 +495,10 @@ function script.update(dt, mode, turnMix)
 
 
   ------------------------------------------------------------------
-  -- HORIZON PITCH
+  -- HORIZON LOCK
+
+  -- HORIZON LOCK PITCH
+  local pitch_horizon   = 0
   if horizonSettings.HORIZON_PITCH ~= 0 then
 
     --  1. Find the unit vector intersecting the world's ground plane (normal 0,1,0), and car.side with a cross product
@@ -519,9 +515,10 @@ function script.update(dt, mode, turnMix)
     sin_angle = math.dot(car.up  , target)
     pitch_horizon = horizonSettings.HORIZON_PITCH * math.atan(sin_angle, cos_angle)
 
-  end -- HORIZON PITCH
+  end -- HORIZON LOCK PITCH
 
-  -- HORIZON ROLL
+  -- HORIZON LOCK ROLL
+  local roll_horizon    = 0
   if horizonSettings.HORIZON_ROLL ~= 0 then
 
     -- Similar to pitch, but use car.look instead of car.side to rotate
@@ -535,11 +532,15 @@ function script.update(dt, mode, turnMix)
     cos_angle = math.dot(car.side, target)
     sin_angle = math.dot(car.up  , target)
     roll_horizon = horizonSettings.HORIZON_ROLL * math.atan(sin_angle, cos_angle)
-  end -- HORIZON ROLL
+  end -- HORIZON LOCK ROLL
 
 
   ------------------------------------------------------------------
   -- LOOK-AHEAD
+  local yaw_drift = 0
+  local yaw_track = 0
+  local yaw_lookahead   = 0 -- Total at the end (with steering)
+  local yaw_drift_track = 0 -- Just the drift and track follow components
   if lookAheadSettings.DRIFT_SCALE ~= 0 or lookAheadSettings.TRACK_SCALE ~= 0 or lookAheadSettings.STEER_SCALE ~= 0 then
 
     -- Use the current car position first
@@ -550,7 +551,6 @@ function script.update(dt, mode, turnMix)
     if car.speedMs > 1 and (car.position - last_car_position):lengthSquared() > 1e-20 then
 
       -- DRIFT
-      local yaw_drift = 0
       if lookAheadSettings.DRIFT_SCALE ~= 0 then
 
         -- Get the velocity direction unit vector
@@ -566,7 +566,6 @@ function script.update(dt, mode, turnMix)
       end -- DRIFT
 
       -- TRACK (deciphered and edited from default script)
-      local yaw_track = 0
       if lookAheadSettings.TRACK_SCALE ~= 0 then
         -- car.splinePosition seems like a floating point number for the number of laps completed.
         -- car_spline_position seems like the world coordinates for the car's current location along a spline "line" (the AI line, maybe?)
@@ -575,22 +574,19 @@ function script.update(dt, mode, turnMix)
         -- spline_car_distance seems to be the distance from the car's position to the spline point (how well is the car on the "correct" line)
         -- We might imagine using this to reduce the track following when we're far from the "correct" line, e.g., in the weeds.
         local spline_car_distance = car_spline_position:distance(car.position)
+        -- JACK: We should also reduce the effect based on how far car.look is from the spline tangent.
 
         -- Get the target point the specified number of meters ahead of the car along the spline.
         -- I believe the "%1" is to drop off the number of laps, so we just have the progress along the current lap
-        local spline_target = ac.trackProgressToWorldCoordinate((car.splinePosition + lookAheadSettings.TRACK_DISTANCE/sim.trackLengthM) % 1)
+        local spline_target_far  = ac.trackProgressToWorldCoordinate((car.splinePosition + lookAheadSettings.TRACK_DISTANCE/sim.trackLengthM) % 1)
+        local spline_target_near = ac.trackProgressToWorldCoordinate((car.splinePosition + 1                               /sim.trackLengthM) % 1)
 
-        -- subtract the car spline position from the spline target to get the ideal look direction unit vector
-        local track_lookahead_direction = (spline_target - car_spline_position):normalize()
-        --
-        -- Project the look-ahead direction onto the car's plane so we can get just the angle of rotation about car.up
-        track_lookahead_direction = math.dot(track_lookahead_direction, car.look)*car.look
-                                  + math.dot(track_lookahead_direction, car.side)*car.side
+        -- subtract the car spline position from the spline targets to get look direction and approximate spline tangent
+        local track_lookahead_far  = (spline_target_far  - car_spline_position):normalize()
+        local track_lookahead_near = (spline_target_near - car_spline_position):normalize()
 
-        -- Get the angle to the target
-        local track_cos_angle = math.dot(track_lookahead_direction, car.look)
-        local track_sin_angle = math.dot(track_lookahead_direction, car.side)
-        yaw_track = soft_clip(lookAheadSettings.TRACK_SCALE*math.atan(track_sin_angle,track_cos_angle), lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
+        -- The angle between these is the approximate amount we need to turn our head
+        yaw_track = soft_clip(math.dot(vec3(0,1,0), math.cross(track_lookahead_near, track_lookahead_far))*lookAheadSettings.TRACK_SCALE, lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
 
         -- local facingForward = math.pow(math.saturate(math.dot(lookAheadDelta, car.look)), 0.5)
         -- local blendNow = math.lerpInvSat(spline_car_distance, 15, 8) * facingForward
@@ -631,7 +627,7 @@ function script.update(dt, mode, turnMix)
       -- Exponential decay
       --yaw_drift_track = last_yaw_drift_track * (1-dt/0.25)
     end
-    last_yaw_drift_track = yaw_drift_track -- for the decay stuff
+    --last_yaw_drift_track = yaw_drift_track -- for the decay stuff
 
     -- COMBINE WITH STEER (added even if stopped!) to get the total angle
     yaw_lookahead = yaw_drift_track - soft_clip(car.steer*pi/180*lookAheadSettings.STEER_SCALE, lookAheadSettings.STEER_MAX_ANGLE*pi/180)
