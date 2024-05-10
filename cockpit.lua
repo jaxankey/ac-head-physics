@@ -48,6 +48,23 @@ local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
   VERTICAL_LIMIT       = 0.14,
 })
 
+local horizonSettings = scriptSettings:mapSection('HORIZON LOCK', {
+  HORIZON_PITCH = 0,
+  HORIZON_ROLL  = 0,
+})
+
+local lookAheadSettings = scriptSettings:mapSection('LOOK AHEAD', {
+  DRIFT_SCALE = 0,
+  DRIFT_MAX_ANGLE = 90,
+  STEER_SCALE = 0,
+  STEER_MAX_ANGLE = 15,
+  TRACK_SCALE = 0,
+  TRACK_DISTANCE = 10,
+  TRACK_MAX_ANGLE = 30,
+  MAX_ANGLE   = 90,
+  MAX_SPEED   = 1,
+})
+
 local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   ADVANCED_MODE            = 0,
 
@@ -80,6 +97,7 @@ local displacement_step_limit = advancedSettings.DISPLACEMENT_STEP_LIMIT
 -- Then parabolic to the max value (at x=1.5*ymax). target is the center value
 function soft_clip(value, max, target)
   if target == nil then target = 0 end
+  if max    == 0   then return value end -- Disabled
 
   -- The location of the input value where the parabola peaks
   local xmax = 1.5*max
@@ -102,7 +120,29 @@ function soft_clip(value, max, target)
   end
 end
 
+-- Increases to the max value then returns the max
+-- works in +/- directions.
+function hard_clip(x, max)
+  if target == nil then target = 0 end
 
+  -- Beyond these limits return a constant  
+  if x >  max then return max end
+  if x < -max then return max end
+  return x
+
+end
+
+-- Rotate three vec3's about the vec3 k (UNIT VECTOR!) by a specified angle (radians)
+function rotate_about_axis(v, k, cos_angle, sin_angle)
+
+  -- Rodrigues' rotation formula for each point
+  local r = v*cos_angle + math.cross(k,v)*sin_angle + k*math.dot(k,v)*(1-cos_angle)
+
+  -- Modify vector in place
+  v.x = r.x
+  v.y = r.y
+  v.z = r.z
+end
 
 
 -- Object to hold and evolve a dynamical variable with a spring and damper
@@ -228,9 +268,6 @@ local head = {
   yaw   = FilterSpring:new(  yawSettings.YAW_FREQUENCY       ,   yawSettings.YAW_DAMPING       ,   yawSettings.YAW_LIMIT  *pi/180.0),
 }
 
-
-
-
 -- Needed for additional tracking enabled.
 local pitch_tau = 0
 local roll_tau  = 0
@@ -274,17 +311,25 @@ local last_car_index = -1
 local last_clock = os.clock()
 local lastFrameIndex = ac.getSim().replayCurrentFrame
 
+-- Memory of previous look vectors
+local last_lookahead_angle = 0
+local last_car_position = nil
+
+-- This is used to more smoothly return the look-ahead angle to center at low speed 
+local lookahead_angle = FilterSpring:new(1, 1, 0)
+--local last_lookahead_drift_track_angle = 0 -- used for exponential decay
 
 
 
 
 
-
-
-
-
-
+--------------------------------------------------------------------------------------------------------------------------------------
 function script.update(dt, mode, turnMix)
+
+  -- In replays, dt can be zero when stopping etc.
+  -- ac.debug('dt intial', dt)
+  if dt == 0 then return end
+
 
   -- Stuff I learned:
       -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
@@ -293,15 +338,191 @@ function script.update(dt, mode, turnMix)
       -- dt can sometimes be zero in this function, so be careful!
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
-  -- In replays, dt can be zero when stopping etc.
-  -- ac.debug('dt intial', dt)
-  if dt == 0 then return end
+  -- REUSABLE VARIABLES
+  local cos_angle, sin_angle, axis, angle, target
 
-  -- Thes angles we will eventually become neck rotations away from colinear with the car
+  ------------------------------------------------------------------
+  -- HORIZON LOCK
+  if horizonSettings.HORIZON_PITCH ~= 0 then
+
+    --  1. Find the unit vector intersecting the world's ground plane (normal 0,1,0), and car.side with a cross product
+    --     if car.side is in the plane, this will point along car.look with no y component
+    --     if car.side points up this is undefined
+    --     if car.side is at some random jank tilt, this will point perpendicular to side but in the plane
+    target = math.cross(vec3(0,1,0),car.side)
+    -- Handle divide-by-zero if side is pointing up
+    if target:lengthSquared() > 1e-20 then target:normalize()
+    else target = car.look:clone() end
+
+    --  2. Find the angle of rotation about car.side that aligns car.look with this unit vector.
+    cos_angle = math.dot(car.look, target)
+    sin_angle = math.dot(car.up  , target)
+    angle = horizonSettings.HORIZON_PITCH * math.atan(sin_angle, cos_angle)
+
+    -- Rotate all three axes, because the in-car app and / or horizon lock may adjust the "zero" of pitch, yaw, and roll
+    cos_angle = math.cos(angle)
+    sin_angle = math.sin(angle)
+    rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.side, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.side, cos_angle, sin_angle)
+
+  end
+
+  if horizonSettings.HORIZON_ROLL ~= 0 then
+
+    -- Similar to pitch, but use car.look instead of car.side to rotate
+    -- 1. Find the unit vector intersecting the world's ground plane (normal 0,1,0), and car.look with a cross product
+    target = math.cross(vec3(0,1,0),car.look)
+    -- Handle divide-by-zero if the look is pointing up (bad things happened)
+    if target:lengthSquared() > 1e-20 then target:normalize()
+    else target = car.side:clone() end
+
+    -- 2. Find teh angle of rotation about car.look that aligns car.side with the target
+    cos_anlge = math.dot(car.side, target)
+    sin_angle = math.dot(car.up  , target)
+    angle = horizonSettings.HORIZON_ROLL * math.atan(sin_angle, cos_angle)
+
+    -- Rotate all three axes, because the in-car app and / or horizon lock may adjust the "zero" of pitch, yaw, and roll
+    cos_angle = math.cos(angle)
+    sin_angle = math.sin(angle)
+    rotate_about_axis(neck.look, car.look, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.look, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.look, cos_angle, sin_angle)
+  end
+
+
+  ------------------------------------------------------------------
+  -- LOOK-AHEAD
+  if lookAheadSettings.DRIFT_SCALE ~= 0 or lookAheadSettings.TRACK_SCALE ~= 0 or lookAheadSettings.STEER_SCALE ~= 0 then
+
+    -- Use the current car position first
+    if last_car_position == nil then last_car_position = car.position:clone() end
+
+    -- The total angle we are supposed to look toward; this has contributions from all three dynamics below
+    angle = 0
+    -- Calculate the track follow and drift angles only if we're moving fast enough and there
+    -- wasn't some weird glitch.
+    if car.speedMs > 1 and (car.position - last_car_position):lengthSquared() > 1e-20 then
+
+      -- DRIFT
+      local angle_drift = 0
+      if lookAheadSettings.DRIFT_SCALE ~= 0 then
+
+        -- Get the velocity direction unit vector
+        local vhat = (car.position - last_car_position):normalize()
+        sin_angle = math.dot(vhat, car.side)
+        cos_angle = math.dot(vhat, car.look)
+
+        -- get the soft-clipped angle to rotate
+        angle_drift = soft_clip(math.atan(sin_angle, cos_angle)*lookAheadSettings.DRIFT_SCALE, lookAheadSettings.DRIFT_MAX_ANGLE*pi/180)
+
+        last_car_position = car.position:clone()
+
+      end -- DRIFT
+
+      -- TRACK (deciphered and edited from default script)
+      local angle_track = 0
+      if lookAheadSettings.TRACK_SCALE ~= 0 then
+        -- car.splinePosition seems like a floating point number for the number of laps completed.
+        -- car_spline_position seems like the world coordinates for the car's current location along a spline "line" (the AI line, maybe?)
+        local car_spline_position = ac.trackProgressToWorldCoordinate(car.splinePosition)
+
+        -- spline_car_distance seems to be the distance from the car's position to the spline point (how well is the car on the "correct" line)
+        -- We might imagine using this to reduce the track following when we're far from the "correct" line, e.g., in the weeds.
+        local spline_car_distance = car_spline_position:distance(car.position)
+
+        -- Get the target point the specified number of meters ahead of the car along the spline.
+        -- I believe the "%1" is to drop off the number of laps, so we just have the progress along the current lap
+        local spline_target = ac.trackProgressToWorldCoordinate((car.splinePosition + lookAheadSettings.TRACK_DISTANCE/sim.trackLengthM) % 1)
+
+        -- subtract the car spline position from the spline target to get the ideal look direction unit vector
+        local track_lookahead_direction = (spline_target - car_spline_position):normalize()
+        --
+        -- Project the look-ahead direction onto the car's plane so we can get just the angle of rotation about car.up
+        track_lookahead_direction = math.dot(track_lookahead_direction, car.look)*car.look
+                                  + math.dot(track_lookahead_direction, car.side)*car.side
+
+        -- Get the angle to the target
+        local track_cos_angle = math.dot(track_lookahead_direction, car.look)
+        local track_sin_angle = math.dot(track_lookahead_direction, car.side)
+        angle_track = soft_clip(lookAheadSettings.TRACK_SCALE*math.atan(track_sin_angle,track_cos_angle), lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
+
+        -- local facingForward = math.pow(math.saturate(math.dot(lookAheadDelta, car.look)), 0.5)
+        -- local blendNow = math.lerpInvSat(spline_car_distance, 15, 8) * facingForward
+        -- lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
+        -- lookAheadX = math.applyLag(lookAheadX, math.dot(lookAheadDelta * powDriftState * math.saturate(car.speedMs/10 - 0.1) * cfg.TRACK_FOLLOWING_MULT, car.side) * lookAheadBlend, 0.95, dt)
+        -- local lookAheadYMult = math.dot(lookAheadDelta * 0.7, car.groundNormal) * lookAheadBlend
+        -- lookAheadYMult = lookAheadYMult < 0 and lookAheadYMult / 2 or lookAheadYMult
+        -- lookAheadY = math.applyLag(lookAheadY, lookAheadYMult, 0.98, dt)
+        -- ----
+        -- local trackFollowing = spline_target == INVALID_SPLINE_POINT and 0 or cfg.TRACK_FOLLOWING
+        -- local mainTurn = turnHead * cfg.SLIDE_FOLLOWING + math.lerp(steerSmooth * cfg.STEERING_MULT, lookAheadX, trackFollowing)
+      end -- TRACK
+
+      -- Total angle including the drift and track following
+      -- The combined angle will be a weighted sum basted on relative contributions
+      -- If one dominates over the other, it will do most of the work
+      -- If they are aligned, this method does not double the angle
+      -- local ad2 = angle_drift*angle_drift
+      -- local at2 = angle_track*angle_track
+      -- if at2+ad2 > 1e-20 then
+      --   local wd2 = ad2/(at2+ad2)
+      --   local wt2 = at2/(at2+ad2)
+      --   angle = math.sqrt(wd2*ad2 + wt2*at2)
+      -- end -- Otherwise angle is zero.
+
+      -- Man, this just has the fewest confusing discontinuities of anything I tried.
+      angle = angle_drift + angle_track
+
+      -- Keep track of the velocity and value for smoother return to center
+      lookahead_angle.velocity = (angle - lookahead_angle.value)/dt
+      lookahead_angle.value = angle_drift + angle_track
+
+    -- If we're going below the threshold speed, have things relax back to centered.
+    else
+      -- Critically damped decay
+      angle = lookahead_angle.evolve(dt,0)
+
+      -- Exponential decay
+      --angle = last_lookahead_drift_track_angle * (1-dt/0.25)
+    end
+    --last_lookahead_drift_track_angle = angle -- for the decay stuff
+
+    -- COMBINE WITH STEER (added even if stopped!) to get the total angle
+    angle = angle - soft_clip(car.steer*pi/180*lookAheadSettings.STEER_SCALE, lookAheadSettings.STEER_MAX_ANGLE*pi/180)
+
+    -- Final global soft clip
+    angle = soft_clip(angle, lookAheadSettings.MAX_ANGLE*pi/180.0)
+
+    -- At the end of this, we have calculated the target "angle". 
+    -- If we allowed it to move infinitely fast, we could do rotations now.
+    -- However, we want to limit the speed the head is allowed to rotate to avoid violent shaking
+    --ac.debug('test', (angle - last_lookahead_angle)/(lookAheadSettings.MAX_SPEED*dt) )
+    if lookAheadSettings.MAX_SPEED > 0 then 
+      angle = last_lookahead_angle + soft_clip(angle - last_lookahead_angle, lookAheadSettings.MAX_SPEED*dt)
+    end
+
+    -- Debug steady rotation.
+    -- angle = last_lookahead_angle + 0.1*dt
+
+    -- Rotate all three axes, because the in-car app and / or horizon lock may adjust the "zero" of pitch, yaw, and roll
+    cos_angle = math.cos(angle)
+    sin_angle = math.sin(angle)
+    rotate_about_axis(neck.look, car.up, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.up, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.up, cos_angle, sin_angle)
+    last_lookahead_angle = angle
+
+  end -- LOOK-AHEAD STUFF
+
+
+  -----------------------------------------------------------------
+  -- HEAD PHYSICS
+
+  -- These angles we will eventually become neck rotations away from colinear with the car
   local pitch = 0
   local roll  = 0
   local yaw   = 0
-
   local frameIndexChange = math.abs(ac.getSim().replayCurrentFrame - lastFrameIndex)
 
   -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile,
@@ -327,7 +548,9 @@ function script.update(dt, mode, turnMix)
     last_car_up   = car.up  :clone()
 
     first_run = false
+
   else
+
 
     -- DISPLACEMENT PHYSICS
     -- 
@@ -362,7 +585,7 @@ function script.update(dt, mode, turnMix)
       neck.position:addScaled(car.look, -head.z.value)
     end
 
-    -- ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
+    -- ROTATION PHYSICS, ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
       -- Disadvantage that there is no tune between car vs horizon
       -- 1. Add the angular change to the roll value
       -- 2. If "extra tracking" is enabled, high-pass according to the optimal calculations.
@@ -380,7 +603,7 @@ function script.update(dt, mode, turnMix)
       head.pitch:evolve(dt, 0, 0)
 
       -- Prep for 4: Get the base value to add to the look and side vectors
-      pitch = head.pitch.value
+      pitch = head.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
 
     end
 
@@ -394,7 +617,7 @@ function script.update(dt, mode, turnMix)
       head.roll:evolve(dt, 0, 0)
 
       -- Prep for 4: Get the base value to add to the look and side vectors
-      roll = head.roll.value
+      roll = head.roll.value * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics proportion.
     end
 
     -- Yaw dynamics
@@ -415,26 +638,50 @@ function script.update(dt, mode, turnMix)
     if advancedSettings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll  = roll  + head.x.value/advancedSettings.HORIZONTAL_ROLL_PIVOT end
     if advancedSettings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw   = yaw   + head.x.value/advancedSettings.HORIZONTAL_YAW_PIVOT  end
 
-  end
+    -- At this point we have only displaced the neck according to g-forces, and calculated how far the neck should rotate relative
+    -- to the equilibrium point, reckoned with respect to the car axes
+    -- If there is some kind of look-ahead, like track, wheel, or drift following, the neck's rotation may 
+    -- be wildly different from aligned to the car. However, we should be able to apply pitch, yaw, roll to all three
+    -- of these axes to smooth out the bumps. This effectively means the stiffness and damping in the three directions
+    -- will always be reckoned with respect to the car, not the look-ahead equilibrium axes of the head.
+    -- The position is already handled.
 
-  -- Remember the last values (making copies)
-  last_car_look  = car.look:clone()
-  last_car_up    = car.up  :clone()
-  last_car_index = car.index
-  last_clock     = os.clock()
-  lastFrameIndex = ac.getSim().replayCurrentFrame
+    cos_angle = math.cos(pitch)
+    sin_angle = math.sin(pitch)
+    rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.side, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.side, cos_angle, sin_angle)
 
-  -- Do the rotations
-  -- NOTE: This is an approximation valid for small rotations, and we rotate only 
-  --       the most important two axes for each DOF.
-  --       We could try rotating all 3 and try a (costly) normalized angle rotation
-  --       rather than distance to improve non-orthogonality?
-  neck.look:addScaled(math.cross(car.side,neck.look), pitch)
-  neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
-  neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
-  neck.side:addScaled(math.cross(car.look,neck.side), roll )
-  neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
-  neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
+    cos_angle = math.cos(yaw)
+    sin_angle = math.sin(yaw)
+    rotate_about_axis(neck.look, car.up, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.up, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.up, cos_angle, sin_angle)
+
+    cos_angle = math.cos(roll)
+    sin_angle = math.sin(roll)
+    rotate_about_axis(neck.look, car.look, cos_angle, sin_angle)
+    rotate_about_axis(neck.side, car.look, cos_angle, sin_angle)
+    rotate_about_axis(neck.up  , car.look, cos_angle, sin_angle)
+
+
+    -- Quick method with no look-ahead didn't save much overhead.
+    -- else
+    --   -- QUICK METHOD Do the rotations
+    --   -- NOTE: This is an approximation valid for small rotations, and we rotate only 
+    --   --       the most important two axes for each DOF.
+    --   --       We could try rotating all 3 and try a (costly) normalized angle rotation
+    --   --       rather than distance to improve non-orthogonality?
+    --   neck.look:addScaled(math.cross(car.side,neck.look), pitch)
+    --   neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
+    --   neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
+    --   neck.side:addScaled(math.cross(car.look,neck.side), roll )
+    --   neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
+    --   neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
+    -- end
+
+  end -- End of "we should do neck physics"
+
 
   -- These tests showed me that even crashing an F2004 the lengths changed by at most ~2% from unity.
   -- So the small rotation approximation is pretty good
@@ -445,12 +692,23 @@ function script.update(dt, mode, turnMix)
   -- These tests showed that normal driving lead to <1% overlap between these basis vectors.
   -- In a crash, these things can be like 0.2, which is consistent with few percent in length errors,
   -- which are second order (overlap is first order)
-  -- ac.debug('look-up overlap',   dot(neck.look, neck.up))
-  -- ac.debug('look-side overlap', dot(neck.look, neck.side))
-  -- ac.debug('side-up overlap',   dot(neck.side, neck.up))
+  -- ac.debug('look-up overlap',   math.dot(neck.look, neck.up))
+  -- ac.debug('look-side overlap', math.dot(neck.look, neck.side))
+  -- ac.debug('side-up overlap',   math.dot(neck.side, neck.up))
+  -- ac.debug('look length', neck.look:length())
+  -- ac.debug('side length', neck.side:length())
+  -- ac.debug('up length'  , neck.up  :length())
   -- ac.debug('dt', dt)
   -- ac.debug('neck look', neck.look)
   -- ac.debug('car look', car.look)
+
+  -- Remember the last values (making copies)
+  last_car_look  = car.look:clone()
+  last_car_up    = car.up  :clone()
+  last_car_index = car.index
+  last_clock     = os.clock()
+  lastFrameIndex = ac.getSim().replayCurrentFrame
+  
 end
 
 
