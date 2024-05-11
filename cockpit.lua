@@ -586,8 +586,17 @@ function script.update(dt, mode, turnMix)
         local track_lookahead_near = (spline_target_near - car_spline_position):normalize()
 
         -- The angle between these is the approximate amount we need to turn our head
-        yaw_track = soft_clip(math.dot(vec3(0,1,0), math.cross(track_lookahead_near, track_lookahead_far))*lookAheadSettings.TRACK_SCALE, lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
+        yaw_track = math.dot(car.up, math.cross(track_lookahead_near, track_lookahead_far))*lookAheadSettings.TRACK_SCALE
 
+        -- Scale down with the orientation of the car
+        local overlap = math.dot(car.look, track_lookahead_near)
+        ac.debug('over',overlap)
+        if overlap > 0 then
+          yaw_track = soft_clip(yaw_track*overlap^2, lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
+        else
+          yaw_track = 0
+        end
+          
         -- local facingForward = math.pow(math.saturate(math.dot(lookAheadDelta, car.look)), 0.5)
         -- local blendNow = math.lerpInvSat(spline_car_distance, 15, 8) * facingForward
         -- lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
