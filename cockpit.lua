@@ -590,7 +590,6 @@ function script.update(dt, mode, turnMix)
 
         -- Scale down with the orientation of the car
         local overlap = math.dot(car.look, track_lookahead_near)
-        ac.debug('over',overlap)
         if overlap > 0 then
           yaw_track = soft_clip(yaw_track*overlap^2, lookAheadSettings.TRACK_MAX_ANGLE*pi/180)
         else
