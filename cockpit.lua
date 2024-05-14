@@ -319,6 +319,8 @@ local last_car_position = nil
 local lookahead_drift_track = FilterSpring:new(1.0, 1.0, 0.0)
 --local last_yaw_drift_track = 0 -- used for exponential decay
 
+-- Gear change pop effect
+local last_gear = 0
 
 
 
@@ -378,6 +380,7 @@ function script.update(dt, mode, turnMix)
     last_car_index = car.index
     last_clock = os.clock()
     lastFrameIndex = ac.getSim().replayCurrentFrame
+    last_gear = car.gear
     return
   end
 
@@ -412,6 +415,12 @@ function script.update(dt, mode, turnMix)
     transient.z:evolve(dt, car.acceleration.z, displacement_step_limit)
     head.z:evolve(dt, 0, forward_scale*transient.z.value)
     neck.position:addScaled(car.look, -head.z.value)
+
+    --JACK: Gear change
+    if last_gear ~= car.gear then
+      -- Add an impulse proportional to the acceleration along this direction
+      --head.z.velocity = head.z.velocity - 10*math.dot(car.acceleration, car.look)
+    end
   end
 
   -- ROTATION PHYSICS, ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
@@ -434,6 +443,7 @@ function script.update(dt, mode, turnMix)
     -- Prep for 4: Get the base value to add to the look and side vectors
     pitch_physics = head.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
 
+    -- JACK: Gear change
   end
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
@@ -466,32 +476,6 @@ function script.update(dt, mode, turnMix)
   if advancedSettings.FORWARD_PITCH_PIVOT   ~= 0 then pitch_physics = pitch_physics - head.z.value/advancedSettings.FORWARD_PITCH_PIVOT   end
   if advancedSettings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll_physics  = roll_physics  + head.x.value/advancedSettings.HORIZONTAL_ROLL_PIVOT end
   if advancedSettings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw_physics   = yaw_physics   + head.x.value/advancedSettings.HORIZONTAL_YAW_PIVOT  end
-
-  -- At this point we have only displaced the neck according to g-forces, and calculated how far the neck should rotate relative
-  -- to the equilibrium point, reckoned with respect to the car axes
-  -- If there is some kind of look-ahead, like track, wheel, or drift following, the neck's rotation may 
-  -- be wildly different from aligned to the car. However, we should be able to apply pitch, yaw, roll to all three
-  -- of these axes to smooth out the bumps. This effectively means the stiffness and damping in the three directions
-  -- will always be reckoned with respect to the car, not the look-ahead equilibrium axes of the head.
-  -- The position is already handled.
-
-  -- Quick method with no look-ahead didn't save much overhead.
-  -- else
-  --   -- QUICK METHOD Do the rotations
-  --   -- NOTE: This is an approximation valid for small rotations, and we rotate only 
-  --   --       the most important two axes for each DOF.
-  --   --       We could try rotating all 3 and try a (costly) normalized angle rotation
-  --   --       rather than distance to improve non-orthogonality?
-  --   neck.look:addScaled(math.cross(car.side,neck.look), pitch)
-  --   neck.up  :addScaled(math.cross(car.side,neck.up  ), pitch)
-  --   neck.up  :addScaled(math.cross(car.look,neck.up  ), roll )
-  --   neck.side:addScaled(math.cross(car.look,neck.side), roll )
-  --   neck.look:addScaled(math.cross(car.up  ,neck.look), yaw  )
-  --   neck.side:addScaled(math.cross(car.up  ,neck.side), yaw  )
-  -- end
-
-  --JACKend -- HEAD PHYSICS
-
 
 
   ------------------------------------------------------------------
@@ -710,7 +694,8 @@ function script.update(dt, mode, turnMix)
   last_car_index = car.index
   last_clock     = os.clock()
   lastFrameIndex = ac.getSim().replayCurrentFrame
-  
+  last_gear = car.gear
+
 end
 
 
