@@ -65,6 +65,16 @@ local lookAheadSettings = scriptSettings:mapSection('LOOK AHEAD', {
   MAX_SPEED   = 1,
 })
 
+local effectSettings = scriptSettings:mapSection('EFFECTS', {
+  GEAR_BUCK_ENABLED = 0,
+  GEAR_BUCK_SCALE = 0,
+  GEAR_BUCK_VERTICAL = 0,
+  GEAR_BUCK_FORWARD = 0,
+  GEAR_BUCK_PITCH = 0,
+  GEAR_BUCK_FREQUENCY = 4,
+  GEAR_BUCK_DAMPING = 0.5,
+})
+
 local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   ADVANCED_MODE            = 0,
 
@@ -319,9 +329,9 @@ local last_car_position = nil
 local lookahead_drift_track = FilterSpring:new(1.0, 1.0, 0.0)
 --local last_yaw_drift_track = 0 -- used for exponential decay
 
--- Gear change pop effect
+-- EFFECTS
 local last_gear = 0
-
+local gear_bucker = FilterSpring:new(effectSettings.GEAR_BUCK_FREQUENCY, effectSettings.GEAR_BUCK_DAMPING, 0)
 
 
 
@@ -380,9 +390,15 @@ function script.update(dt, mode, turnMix)
     last_car_index = car.index
     last_clock = os.clock()
     lastFrameIndex = ac.getSim().replayCurrentFrame
+
     last_gear = car.gear
+    gear_bucker:reset()
     return
   end
+
+ 
+
+
 
   -- DISPLACEMENT PHYSICS
   -- 
@@ -415,12 +431,6 @@ function script.update(dt, mode, turnMix)
     transient.z:evolve(dt, car.acceleration.z, displacement_step_limit)
     head.z:evolve(dt, 0, forward_scale*transient.z.value)
     neck.position:addScaled(car.look, -head.z.value)
-
-    --JACK: Gear change
-    if last_gear ~= car.gear then
-      -- Add an impulse proportional to the acceleration along this direction
-      --head.z.velocity = head.z.velocity - 10*math.dot(car.acceleration, car.look)
-    end
   end
 
   -- ROTATION PHYSICS, ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
@@ -442,8 +452,6 @@ function script.update(dt, mode, turnMix)
 
     -- Prep for 4: Get the base value to add to the look and side vectors
     pitch_physics = head.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
-
-    -- JACK: Gear change
   end
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
@@ -648,10 +656,27 @@ function script.update(dt, mode, turnMix)
 
   end -- LOOK-AHEAD STUFF
 
+  -------------------------------------------------------------------
+  -- EFFECTS
+  -- These are distributed through the physics and other stuff below
+  if effectSettings.GEAR_BUCK_ENABLED ~= 0 then
+    --Gear change
+    if last_gear ~= car.gear then
+      -- Add an impulse proportional to the acceleration along this direction
+      gear_bucker.velocity = effectSettings.GEAR_BUCK_SCALE*0.5
+    end
+    gear_bucker:evolve(dt, 0, 0)
+    neck.position:addScaled(car.up,                                         gear_bucker.value*effectSettings.GEAR_BUCK_VERTICAL)
+    neck.position:addScaled(car.look, -math.dot(car.acceleration, car.look)*gear_bucker.value*effectSettings.GEAR_BUCK_FORWARD*2)
+  end
 
-  -- Do all the rotations at once to save CPU
-  cos_angle = math.cos(pitch_physics+pitch_horizon)
-  sin_angle = math.sin(pitch_physics+pitch_horizon)
+  ------------------------------------------------------------------
+  -- FINAL ROTATIONS
+  -- Do all the combined rotations once to save CPU
+  local pitch = pitch_physics+pitch_horizon
+              - math.dot(car.acceleration, car.look) * gear_bucker.value*effectSettings.GEAR_BUCK_PITCH
+  cos_angle = math.cos(pitch)
+  sin_angle = math.sin(pitch)
   rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
   rotate_about_axis(neck.side, car.side, cos_angle, sin_angle)
   rotate_about_axis(neck.up  , car.side, cos_angle, sin_angle)
