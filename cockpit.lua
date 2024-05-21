@@ -73,6 +73,7 @@ local effectSettings = scriptSettings:mapSection('EFFECTS', {
   GEAR_BUCK_PITCH = 0,
   GEAR_BUCK_FREQUENCY = 4,
   GEAR_BUCK_DAMPING = 0.5,
+  GEAR_BUCK_GAS_SCALE = 0.5,
 })
 
 local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
@@ -659,7 +660,7 @@ function script.update(dt, mode, turnMix)
   -------------------------------------------------------------------
   -- EFFECTS
   -- These are distributed through the physics and other stuff below
-  local rpm_scale = car.rpm/car.rpmLimiter
+  local rpm_gas_scale = (1 + 2*car.gas*effectSettings.GEAR_BUCK_GAS_SCALE) * car.rpm/car.rpmLimiter
   if effectSettings.GEAR_BUCK_ENABLED ~= 0 then
     --Gear change
     if last_gear ~= car.gear then
@@ -667,15 +668,15 @@ function script.update(dt, mode, turnMix)
       gear_bucker.velocity = effectSettings.GEAR_BUCK_SCALE*0.5
     end
     gear_bucker:evolve(dt, 0, 0)
-    neck.position:addScaled(car.up,                                         gear_bucker.value*effectSettings.GEAR_BUCK_VERTICAL*rpm_scale)
-    neck.position:addScaled(car.look, -math.dot(car.acceleration, car.look)*gear_bucker.value*effectSettings.GEAR_BUCK_FORWARD*rpm_scale)
+    neck.position:addScaled(car.up,                                         gear_bucker.value*effectSettings.GEAR_BUCK_VERTICAL*rpm_gas_scale)
+    neck.position:addScaled(car.look, -math.dot(car.acceleration, car.look)*gear_bucker.value*effectSettings.GEAR_BUCK_FORWARD*rpm_gas_scale*3)
   end
 
   ------------------------------------------------------------------
   -- FINAL ROTATIONS
   -- Do all the combined rotations once to save CPU
   local pitch = pitch_physics+pitch_horizon
-              - math.dot(car.acceleration, car.look) * gear_bucker.value*effectSettings.GEAR_BUCK_PITCH*2*rpm_scale
+              - math.dot(car.acceleration, car.look) * gear_bucker.value*effectSettings.GEAR_BUCK_PITCH*2*rpm_gas_scale
   cos_angle = math.cos(pitch)
   sin_angle = math.sin(pitch)
   rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
