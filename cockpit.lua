@@ -56,11 +56,14 @@ local horizonSettings = scriptSettings:mapSection('HORIZON LOCK', {
 local lookAheadSettings = scriptSettings:mapSection('LOOK AHEAD', {
   DRIFT_SCALE = 0,
   DRIFT_MAX_ANGLE = 90,
+  VR_ENABLE_DRIFT = 1,
   STEER_SCALE = 0,
   STEER_MAX_ANGLE = 15,
+  VR_ENABLE_STEER = 1,
   TRACK_SCALE = 0,
   TRACK_DISTANCE = 10,
   TRACK_MAX_ANGLE = 30,
+  VR_ENABLE_TRACK = 1,
   MAX_ANGLE   = 90,
   MAX_SPEED   = 1,
 })
@@ -343,6 +346,8 @@ function script.update(dt, mode, turnMix)
   -- ac.debug('dt intial', dt)
   if dt == 0 then return end
 
+  local vr_enabled = ac.getSim().isVRConnected
+  --ac.debug('VR', {ac.getSim().isVRMode, ac.getSim().isVRConnected})
 
   -- Stuff I learned:
       -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
@@ -544,7 +549,7 @@ function script.update(dt, mode, turnMix)
     if car.speedMs > 1 and (car.position - last_car_position):lengthSquared() > 1e-20 then
 
       -- DRIFT
-      if lookAheadSettings.DRIFT_SCALE ~= 0 then
+      if lookAheadSettings.DRIFT_SCALE ~= 0 and (vr_enabled == 0 or (vr_enabled == 1 and lookAheadSettings.VR_ENABLE_DRIFT)) then
 
         -- Get the velocity direction unit vector
         local vhat = (car.position - last_car_position):normalize()
@@ -559,7 +564,7 @@ function script.update(dt, mode, turnMix)
       end -- DRIFT
 
       -- TRACK (deciphered and edited from default script)
-      if lookAheadSettings.TRACK_SCALE ~= 0 then
+      if lookAheadSettings.TRACK_SCALE ~= 0 and (vr_enabled == 0 or (vr_enabled == 1 and lookAheadSettings.VR_ENABLE_TRACK)) then
         -- car.splinePosition seems like a floating point number for the number of laps completed.
         -- car_spline_position seems like the world coordinates for the car's current location along a spline "line" (the AI line, maybe?)
         local car_spline_position = ac.trackProgressToWorldCoordinate(car.splinePosition)
@@ -631,7 +636,11 @@ function script.update(dt, mode, turnMix)
     --last_yaw_drift_track = yaw_drift_track -- for the decay stuff
 
     -- COMBINE WITH STEER (added even if stopped!) to get the total angle
-    yaw_lookahead = yaw_drift_track - soft_clip(car.steer*pi/180*lookAheadSettings.STEER_SCALE, lookAheadSettings.STEER_MAX_ANGLE*pi/180)
+    if vr_enabled == 0 or (vr_enabled == 1 and lookAheadSettings.VR_ENABLE_STEER) then
+      yaw_lookahead = yaw_drift_track - soft_clip(car.steer*pi/180*lookAheadSettings.STEER_SCALE, lookAheadSettings.STEER_MAX_ANGLE*pi/180)
+    else
+      yaw_lookahead = yaw_drift_track
+    end
 
     -- Final global soft clip
     yaw_lookahead = soft_clip(yaw_lookahead, lookAheadSettings.MAX_ANGLE*pi/180.0)
