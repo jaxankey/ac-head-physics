@@ -357,7 +357,7 @@ function script.update(dt, mode, turnMix)
       -- We use vec3:addScaled to avoid creating new vectors, in case CSP maintains a handle on them.
 
   -- REUSABLE VARIABLES
-  local cos_angle, sin_angle, target
+  local cos_angle, sin_angle, target, dpitch, droll, dyaw
 
   
   -----------------------------------------------------------------
@@ -409,7 +409,7 @@ function script.update(dt, mode, turnMix)
   -- DISPLACEMENT PHYSICS
   -- 
   -- For each of these, high-pass filter the car acceleration to get transients (unless
-  -- the recenter time is set to zero, in which case we just use acceleration),
+  -- the recenter time is set to zero (by default), in which case we just use acceleration),
   -- then evolve the position under this acceleration and displace the head.
   --
   -- car.acceleration (unlike rotation velocity?) seems to have its axes aligned with the car
@@ -419,13 +419,21 @@ function script.update(dt, mode, turnMix)
   --
   -- IMPORTANT: Using car.acceleration has the disadvantage that the physics engine doesn't
   -- coincide with the frame rate, which can cause jitters when frame rate is low. 
-  -- These are not as noticeable for center-of-mass motion, as much. 
+  -- These are not as noticeable for center-of-mass motion. 
   -- The only other option is to calculate acceleration manually with two steps of 
   -- different dt, which may introduce lag, but we could also maybe implement an 
   -- accumulation approach like for rotations.
   if horizontalSettings.HORIZONTAL_ENABLED == 1 then
+
+    -- If enabled, use only the transients in acceleration, which will restore the head to
+    -- equilibrium on constant acceleration
     transient.x:evolve(dt, car.acceleration.x, displacement_step_limit)
+
+    -- Evolove harmonic oscillator with target 0 and applied acceleration from above
+    -- nominally horizontal_scale=1, and transient is just acceleration.
     head.x:evolve(dt, 0, horizontal_scale*transient.x.value)
+
+    -- Adjust head backwards by the value
     neck.position:addScaled(car.side, -head.x.value)
   end
   if verticalSettings.VERTICAL_ENABLED == 1 then
@@ -449,12 +457,15 @@ function script.update(dt, mode, turnMix)
 
   -- Pitch dynamics: Evolve toward the car's look.y (vertical) value, and add the difference
   if pitchSettings.PITCH_ENABLED == 1 then
-    -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt,
-      math.dot(math.cross(car.look, last_car_look), car.side)/dt) * dt
+    -- Get how far the car has rotated
+    dpitch = math.dot(math.cross(car.look, last_car_look), car.side)
+
+    -- 1-2: Accumulate rotation angle from the car, optionally high-passing (enabled for eye-tracking)
+    -- Limit: if eye-tracking is disabled, the evolve() statement just returns dpitch/dt
+    head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dpitch/dt) * dt
 
     -- 3: Let the head try to relax back to center by harmonic motion.
-    head.pitch:evolve(dt, 0, 0)
+    head.pitch:evolve(dt, 0, 0) -- JACK: To transfer high-frequency vibrations, add a scaled dpitch here? 
 
     -- Prep for 4: Get the base value to add to the look and side vectors
     pitch_physics = head.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
@@ -462,27 +473,17 @@ function script.update(dt, mode, turnMix)
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
   if rollSettings.ROLL_ENABLED == 1 then
-    -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-    head.roll.value = head.roll.value + transient.roll:evolve(dt,
-      math.dot(math.cross(car.up, last_car_up), car.look)/dt) * dt
-
-    -- 3: Let the head try to relax back to center by harmonic motion.
+    droll = math.dot(math.cross(car.up, last_car_up), car.look)
+    head.roll.value = head.roll.value + transient.roll:evolve(dt, droll/dt) * dt
     head.roll:evolve(dt, 0, 0)
-
-    -- Prep for 4: Get the base value to add to the look and side vectors
     roll_physics = head.roll.value * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics proportion.
   end
 
   -- Yaw dynamics
   if yawSettings.YAW_ENABLED == 1 then
-    -- 1-2: Accumulate rotation angle from the car, optionally high-passing.
-    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt,
-      math.dot(math.cross(car.look, last_car_look), car.up)/dt) * dt
-
-    -- 3: Let the head try to relax back to center by harmonic motion.
+    dyaw = math.dot(math.cross(car.look, last_car_look), car.up)
+    head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dyaw/dt) * dt
     head.yaw:evolve(dt, 0, 0)
-
-    -- Prep for 4: Get the base value to add to the look and side vectors
     yaw_physics = head.yaw.value
   end
 

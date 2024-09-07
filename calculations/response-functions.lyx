@@ -352,5 +352,41 @@ This way, we can say the vibrations are more damped above the spring frequency
  and the car is better tracked below the spring frequency.
 \end_layout
 
+\begin_layout Section
+Harmonic oscillator with proportional
+\end_layout
+
+\begin_layout Standard
+The classic driven harmonic oscillator equation has form
+\begin_inset Formula 
+\[
+\ddot{x}+\Gamma\dot{x}+\Omega^{2}x=a
+\]
+
+\end_inset
+
+leading to susceptibility
+\begin_inset Formula 
+\[
+\chi=\frac{1}{\Omega^{2}-\omega^{2}+i\omega\Gamma}.
+\]
+
+\end_inset
+
+For large 
+\begin_inset Formula $\omega>\Omega,$
+\end_inset
+
+this falls off as 
+\begin_inset Formula $1/\omega^{2}$
+\end_inset
+
+.
+ Suppose we also want a proportional component with a transition at some
+ higher frequency, such that..
+ eh never mind I found another way in the code.
+ :)
+\end_layout
+
 \end_body
 \end_document
