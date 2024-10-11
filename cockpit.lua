@@ -252,7 +252,7 @@ function FilterLowPass:new(time_constant)
 end
 
 -- Function that evolves the high pass 
-function FilterLowPass:evolve(dt, input)
+function FilterLowPass:evolve(dt, input, step_limit)
 
   -- Disabled
   if self.time_constant == 0 then
@@ -267,7 +267,8 @@ function FilterLowPass:evolve(dt, input)
   local a = dt/(self.time_constant+dt)
 
   -- Get the new output (updating previous)
-  self.value = self.value + a*(input-self.value)
+  if step_limit ~= nil then self.value = self.value + soft_clip(a*(input-self.value), step_limit)
+  else                      self.value = self.value +           a*(input-self.value) end
   self.previous_input = input
 
   return self.value
@@ -303,7 +304,7 @@ function FilterHighPass:new(time_constant)
 end
 
 -- Function that evolves the high pass 
-function FilterHighPass:evolve(dt, input)
+function FilterHighPass:evolve(dt, input, step_limit)
 
   -- Disabled
   if self.time_constant == 0 then
@@ -316,7 +317,8 @@ function FilterHighPass:evolve(dt, input)
   local a = self.time_constant/(self.time_constant+dt)
 
   -- Get the new output (updating previous)
-  self.value = a*self.value + a*(input-self.previous_input)
+  if step_limit ~= nil then self.value = self.value + soft_clip((a-1)*self.value + a*(input-self.previous_input), step_limit)
+  else                      self.value = self.value +           (a-1)*self.value + a*(input-self.previous_input) end
   self.previous_input = input
 
   return self.value
@@ -385,12 +387,12 @@ local yaw_tau_lp   = 0
 local forward_tau_lp    = 0
 local horizontal_tau_lp = 0
 local vertical_tau_lp   = 0
-if pitch_bw > 0 then pitch_tau_lp = 1/(2*pi*pitch_tau_lp) end
-if roll_bw  > 0 then roll_tau_lp  = 1/(2*pi*roll_tau_lp)  end
-if yaw_bw   > 0 then yaw_tau_lp   = 1/(2*pi*yaw_tau_lp)   end
-if forward_bw    > 0 then forward_tau_lp    = 1/(2*pi*forward_tau_lp)    end
-if horizontal_bw > 0 then horizontal_tau_lp = 1/(2*pi*horizontal_tau_lp) end
-if vertical_bw   > 0 then vertical_tau_lp   = 1/(2*pi*vertical_tau_lp)   end
+if pitch_bw > 0 then pitch_tau_lp = 1/(2*pi*pitch_bw) end
+if roll_bw  > 0 then roll_tau_lp  = 1/(2*pi*roll_bw)  end
+if yaw_bw   > 0 then yaw_tau_lp   = 1/(2*pi*yaw_bw)   end
+if forward_bw    > 0 then forward_tau_lp    = 1/(2*pi*forward_bw)    end
+if horizontal_bw > 0 then horizontal_tau_lp = 1/(2*pi*horizontal_bw) end
+if vertical_bw   > 0 then vertical_tau_lp   = 1/(2*pi*vertical_bw)   end
 --
 -- Low-pass filters for bandwidth limitations
 local lowpass = {
@@ -437,7 +439,7 @@ function script.update(dt, mode, turnMix)
   if dt == 0 then return end
 
   local vr_enabled = ac.getSim().isVRConnected
-  ac.debug('VR', {ac.getSim().isVRMode, ac.getSim().isVRConnected, vr_enabled})
+  --ac.debug('VR', {ac.getSim().isVRMode, ac.getSim().isVRConnected, vr_enabled})
 
   -- Stuff I learned:
       -- neck.look, neck.up, neck.side, car.look, car.up, car.side are orthogonal unit vectors
@@ -530,19 +532,25 @@ function script.update(dt, mode, turnMix)
     -- nominally horizontal_scale=1, and transient is just acceleration.
     head.x:evolve(dt, 0, horizontal_scale*transient.x.value)
 
+    -- We do a final low pass on the "floating head" so that the head 
+    -- stays locked to the car for high frequencies
+    lowpass.x:evolve(dt, head.x.value)
+
     -- Adjust head backwards by the value
-    neck.position:addScaled(car.side, -head.x.value)
+    neck.position:addScaled(car.side, -lowpass.x.value)
   end
   -- Same for the other two DOF
   if verticalSettings.VERTICAL_ENABLED == 1 then
     transient.y:evolve(dt, car.acceleration.y, displacement_step_limit)
     head.y:evolve(dt, 0, vertical_scale*transient.y.value)
-    neck.position:addScaled(car.up, -head.y.value)
+    lowpass.y:evolve(dt, head.y.value)
+    neck.position:addScaled(car.up, -lowpass.y.value)
   end
   if forwardSettings.FORWARD_ENABLED == 1 then
     transient.z:evolve(dt, car.acceleration.z, displacement_step_limit)
     head.z:evolve(dt, 0, forward_scale*transient.z.value)
-    neck.position:addScaled(car.look, -head.z.value)
+    lowpass.z:evolve(dt, head.z.value)
+    neck.position:addScaled(car.look, -lowpass.z.value)
   end
 
   -- ROTATION PHYSICS, ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
@@ -563,10 +571,11 @@ function script.update(dt, mode, turnMix)
     head.pitch.value = head.pitch.value + transient.pitch:evolve(dt, dpitch/dt) * dt
 
     -- 3: Let the head try to relax back to center by harmonic motion.
-    head.pitch:evolve(dt, 0, 0) -- JACK: To transfer high-frequency vibrations, add a scaled dpitch here? 
+    head.pitch:evolve(dt, 0, 0)
+    lowpass.pitch:evolve(dt, head.pitch.value)
 
     -- Prep for 4: Get the base value to add to the look and side vectors
-    pitch_physics = head.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
+    pitch_physics = lowpass.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
   end
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
@@ -574,7 +583,8 @@ function script.update(dt, mode, turnMix)
     droll = math.dot(math.cross(car.up, last_car_up), car.look)
     head.roll.value = head.roll.value + transient.roll:evolve(dt, droll/dt) * dt
     head.roll:evolve(dt, 0, 0)
-    roll_physics = head.roll.value * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics proportion.
+    lowpass.roll:evolve(dt, head.roll.value)
+    roll_physics = lowpass.roll.value * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics proportion.
   end
 
   -- Yaw dynamics
@@ -582,13 +592,14 @@ function script.update(dt, mode, turnMix)
     dyaw = math.dot(math.cross(car.look, last_car_look), car.up)
     head.yaw.value = head.yaw.value + transient.yaw:evolve(dt, dyaw/dt) * dt
     head.yaw:evolve(dt, 0, 0)
-    yaw_physics = head.yaw.value
+    lowpass.yaw:evolve(dt, head.yaw.value)
+    yaw_physics = lowpass.yaw.value
   end
 
   -- 4: Extra rotations from pivots
-  if advancedSettings.FORWARD_PITCH_PIVOT   ~= 0 then pitch_physics = pitch_physics - head.z.value/advancedSettings.FORWARD_PITCH_PIVOT   end
-  if advancedSettings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll_physics  = roll_physics  + head.x.value/advancedSettings.HORIZONTAL_ROLL_PIVOT end
-  if advancedSettings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw_physics   = yaw_physics   + head.x.value/advancedSettings.HORIZONTAL_YAW_PIVOT  end
+  if advancedSettings.FORWARD_PITCH_PIVOT   ~= 0 then pitch_physics = pitch_physics - lowpass.z.value/advancedSettings.FORWARD_PITCH_PIVOT   end
+  if advancedSettings.HORIZONTAL_ROLL_PIVOT ~= 0 then roll_physics  = roll_physics  + lowpass.x.value/advancedSettings.HORIZONTAL_ROLL_PIVOT end
+  if advancedSettings.HORIZONTAL_YAW_PIVOT  ~= 0 then yaw_physics   = yaw_physics   + lowpass.x.value/advancedSettings.HORIZONTAL_YAW_PIVOT  end
 
 
   ------------------------------------------------------------------
@@ -670,7 +681,7 @@ function script.update(dt, mode, turnMix)
 
         -- spline_car_distance seems to be the distance from the car's position to the spline point (how well is the car on the "correct" line)
         -- We might imagine using this to reduce the track following when we're far from the "correct" line, e.g., in the weeds.
-        local spline_car_distance = car_spline_position:distance(car.position)
+        -- local spline_car_distance = car_spline_position:distance(car.position)
         -- JACK: We should also reduce the effect based on how far car.look is from the spline tangent.
 
         -- Get the target point the specified number of meters ahead of the car along the spline.
