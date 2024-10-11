@@ -2,7 +2,8 @@ local scriptSettings = ac.INIConfig.scriptSettings()
 
 local globalSettings = scriptSettings:mapSection('GLOBAL ADJUSTMENTS', {
   GLOBAL_FREQUENCY_SCALE = 1,
-  GLOBAL_DAMPING_SCALE   = 1.0
+  GLOBAL_DAMPING_SCALE   = 1.0,
+  GLOBAL_BANDWIDTH_SCALE = 0.0,
 })
 
 local pitchSettings = scriptSettings:mapSection('PITCH PHYSICS', {
@@ -11,6 +12,7 @@ local pitchSettings = scriptSettings:mapSection('PITCH PHYSICS', {
   PITCH_DAMPING   = 1.0,
   PITCH_LIMIT     = 30, -- degrees
   PITCH_TRACKING  = 1,
+  PITCH_BANDWIDTH = 20,
 })
 local rollSettings = scriptSettings:mapSection('ROLL PHYSICS', {
   ROLL_ENABLED    = 1,
@@ -18,6 +20,7 @@ local rollSettings = scriptSettings:mapSection('ROLL PHYSICS', {
   ROLL_DAMPING    = 1.0,
   ROLL_LIMIT      = 30, -- degrees
   ROLL_TRACKING   = 0,
+  ROLL_BANDWIDTH  = 20,
 })
 local yawSettings = scriptSettings:mapSection('YAW PHYSICS', {
   YAW_ENABLED     = 0,
@@ -25,6 +28,7 @@ local yawSettings = scriptSettings:mapSection('YAW PHYSICS', {
   YAW_DAMPING     = 1,
   YAW_LIMIT       = 30, -- degrees
   YAW_TRACKING    = 1,
+  YAW_BANDWIDTH   = 20,
 })
 
 local forwardSettings = scriptSettings:mapSection('FORWARD PHYSICS', {
@@ -32,6 +36,7 @@ local forwardSettings = scriptSettings:mapSection('FORWARD PHYSICS', {
   FORWARD_FREQUENCY    = 0.8,  -- Resonance frequency (Hz); lower for more smoothing
   FORWARD_DAMPING      = 1.0,  -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
   FORWARD_LIMIT        = 0.25, -- Maximum head deviation from front-back G-forces (meters). Also adds some nonlinear spring.
+  FORWARD_BANDWIDTH    = 20,
 })
 
 local horizontalSettings = scriptSettings:mapSection('HORIZONTAL PHYSICS', {
@@ -39,6 +44,7 @@ local horizontalSettings = scriptSettings:mapSection('HORIZONTAL PHYSICS', {
   HORIZONTAL_FREQUENCY = 1.3,
   HORIZONTAL_DAMPING   = 1.0,
   HORIZONTAL_LIMIT     = 0.12,
+  HORIZONTAL_BANDWIDTH = 20,
 })
 
 local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
@@ -46,6 +52,7 @@ local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
   VERTICAL_FREQUENCY   = 1,
   VERTICAL_DAMPING     = 1.0,
   VERTICAL_LIMIT       = 0.14,
+  VERTICAL_BANDWIDTH   = 20,
 })
 
 local horizonSettings = scriptSettings:mapSection('HORIZON LOCK', {
@@ -226,6 +233,57 @@ end
 
 
 -- DSP High-pass filter class
+FilterLowPass = {
+  time_constant  = 2.0, -- How long until a change in value returns to zero
+  previous_input = 0,   -- Previous input value
+  value          = 0,   -- Previous output value
+}
+
+-- Function to create an instance
+function FilterLowPass:new(time_constant)
+
+  -- Boilerplate class creation lua nonsense
+  local instance = setmetatable({}, { __index = FilterLowPass })
+
+  -- Initialization
+  instance.time_constant = time_constant
+
+  return instance
+end
+
+-- Function that evolves the high pass 
+function FilterLowPass:evolve(dt, input)
+
+  -- Disabled
+  if self.time_constant == 0 then
+    self.value = input
+    self.previous_input = input
+    return self.value
+  end
+
+  -- Constant for easier coding
+  -- This is close to zero for long time constants, 
+  -- and close to 1 for short time constants
+  local a = dt/(self.time_constant+dt)
+
+  -- Get the new output (updating previous)
+  self.value = self.value + a*(input-self.value)
+  self.previous_input = input
+
+  return self.value
+end
+
+-- Resets the variables
+function FilterLowPass:reset()
+  self.value          = 0
+  self.previous_input = 0
+end
+
+
+
+
+
+-- DSP High-pass filter class
 FilterHighPass = {
   time_constant  = 2.0, -- How long until a change in value returns to zero
   previous_input = 0,   -- Previous input value
@@ -283,36 +341,68 @@ local head = {
 }
 
 -- Needed for additional tracking enabled.
-local pitch_tau = 0
-local roll_tau  = 0
-local yaw_tau   = 0
+local pitch_tau_hp = 0
+local roll_tau_hp  = 0
+local yaw_tau_hp   = 0
 if pitchSettings.PITCH_TRACKING > 0 then 
-  pitch_tau =    1/(2*pi*head.pitch.frequency) 
+  pitch_tau_hp =    1/(2*pi*head.pitch.frequency) 
   head.pitch.damping   = head.pitch.damping*0.5   -- Optimization stabilization frequency dependence
   head.pitch.frequency = head.pitch.frequency*1.2 -- Makes the responses equal closer to the user-set frequency
 end
 if rollSettings.ROLL_TRACKING  > 0 then 
-  roll_tau    = 1/(2*pi*head.roll.frequency)
+  roll_tau_hp    = 1/(2*pi*head.roll.frequency)
   head.roll.damping   = head.roll.damping*0.5
   head.roll.frequency = head.roll.frequency*1.2
 end
 if yawSettings.YAW_TRACKING > 0 then
-  yaw_tau    = 1/(2*pi*head.yaw.frequency)
+  yaw_tau_hp    = 1/(2*pi*head.yaw.frequency)
   head.yaw.damping   = head.yaw.damping*0.5
   head.yaw.frequency = head.yaw.frequency*1.2
 end
-
+--
 -- Dyanmical variables for calculating acceleration transients
 local transient = {
   x     = FilterHighPass:new(advancedSettings.HORIZONTAL_RECENTER_TIME),
   y     = FilterHighPass:new(advancedSettings.VERTICAL_RECENTER_TIME),
   z     = FilterHighPass:new(advancedSettings.FORWARD_RECENTER_TIME),
-  pitch = FilterHighPass:new(pitch_tau),
-  roll  = FilterHighPass:new(roll_tau),
-  yaw   = FilterHighPass:new(yaw_tau),
+  pitch = FilterHighPass:new(pitch_tau_hp),
+  roll  = FilterHighPass:new(roll_tau_hp),
+  yaw   = FilterHighPass:new(yaw_tau_hp),
 }
 
--- Precomputed scale factors (doesn't save much time but oh well)
+
+-- Needed for bandwidth limits
+local pitch_bw   = pitchSettings.PITCH_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
+local roll_bw    = rollSettings.ROLL_BANDWIDTH  *globalSettings.GLOBAL_BANDWIDTH_SCALE
+local yaw_bw     = yawSettings.YAW_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
+local forward_bw    = forwardSettings.FORWARD_BANDWIDTH      *globalSettings.GLOBAL_BANDWIDTH_SCALE
+local horizontal_bw = horizontalSettings.HORIZONTAL_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
+local vertical_bw   = verticalSettings.VERTICAL_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
+--
+local pitch_tau_lp = 0
+local roll_tau_lp  = 0
+local yaw_tau_lp   = 0
+local forward_tau_lp    = 0
+local horizontal_tau_lp = 0
+local vertical_tau_lp   = 0
+if pitch_bw > 0 then pitch_tau_lp = 1/(2*pi*pitch_tau_lp) end
+if roll_bw  > 0 then roll_tau_lp  = 1/(2*pi*roll_tau_lp)  end
+if yaw_bw   > 0 then yaw_tau_lp   = 1/(2*pi*yaw_tau_lp)   end
+if forward_bw    > 0 then forward_tau_lp    = 1/(2*pi*forward_tau_lp)    end
+if horizontal_bw > 0 then horizontal_tau_lp = 1/(2*pi*horizontal_tau_lp) end
+if vertical_bw   > 0 then vertical_tau_lp   = 1/(2*pi*vertical_tau_lp)   end
+--
+-- Low-pass filters for bandwidth limitations
+local lowpass = {
+  x     = FilterLowPass:new(horizontal_tau_lp),
+  y     = FilterLowPass:new(vertical_tau_lp),
+  z     = FilterLowPass:new(forward_tau_lp),
+  pitch = FilterLowPass:new(pitch_tau_lp),
+  roll  = FilterLowPass:new(roll_tau_lp),
+  yaw   = FilterLowPass:new(yaw_tau_lp),
+}
+
+-- Precomputed scale factors (doesn't save much time but oh well looks cleaner)
 local horizontal_scale = advancedSettings.HORIZONTAL_SCALE*advancedSettings.POSITION_SCALE
 local vertical_scale   = advancedSettings.VERTICAL_SCALE  *advancedSettings.POSITION_SCALE
 local forward_scale    = advancedSettings.FORWARD_SCALE   *advancedSettings.POSITION_SCALE
@@ -359,7 +449,7 @@ function script.update(dt, mode, turnMix)
   -- REUSABLE VARIABLES
   local cos_angle, sin_angle, target, dpitch, droll, dyaw
 
-  
+
   -----------------------------------------------------------------
   -- HEAD PHYSICS
   -- These angles we will eventually become neck rotations away from colinear with the car
@@ -384,6 +474,13 @@ function script.update(dt, mode, turnMix)
     transient.pitch:reset()
     transient.roll:reset()
     transient.yaw:reset()
+
+    lowpass.x:reset()
+    lowpass.y:reset()
+    lowpass.z:reset()
+    lowpass.pitch:reset()
+    lowpass.roll:reset()
+    lowpass.yaw:reset()
 
     -- Reset the last car values so the car isn't thought to be rotating
     last_car_look = car.look:clone()
@@ -436,6 +533,7 @@ function script.update(dt, mode, turnMix)
     -- Adjust head backwards by the value
     neck.position:addScaled(car.side, -head.x.value)
   end
+  -- Same for the other two DOF
   if verticalSettings.VERTICAL_ENABLED == 1 then
     transient.y:evolve(dt, car.acceleration.y, displacement_step_limit)
     head.y:evolve(dt, 0, vertical_scale*transient.y.value)
