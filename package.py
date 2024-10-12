@@ -1,4 +1,4 @@
-import zipfile, os
+import zipfile, os, subprocess
 
 # All the files that are needed
 files = ['cockpit.lua', 'manifest.ini', 'settings.ini']
@@ -31,3 +31,5 @@ zip_file.write('INSTALLATION INSTRUCTIONS.txt')
 # Close it.
 zip_file.close()
 print('ALL DONE!')
+
+subprocess.Popen(r'explorer /select, "'+os.path.join(os.getcwd(),zip_name)+'"')

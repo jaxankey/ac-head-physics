@@ -73,6 +73,7 @@ local lookAheadSettings = scriptSettings:mapSection('LOOK AHEAD', {
   VR_ENABLE_TRACK = 1,
   MAX_ANGLE   = 90,
   MAX_SPEED   = 1,
+  SMOOTHING   = 0.2,
 })
 
 local effectSettings = scriptSettings:mapSection('EFFECTS', {
@@ -267,8 +268,8 @@ function FilterLowPass:evolve(dt, input, step_limit)
   local a = dt/(self.time_constant+dt)
 
   -- Get the new output (updating previous)
-  if step_limit ~= nil then self.value = self.value + soft_clip(a*(input-self.value), step_limit)
-  else                      self.value = self.value +           a*(input-self.value) end
+  if step_limit ~= nil and step_limit > 0 then self.value = self.value + soft_clip(a*(input-self.value), step_limit)
+  else                                         self.value = self.value +           a*(input-self.value) end
   self.previous_input = input
 
   return self.value
@@ -373,10 +374,10 @@ local transient = {
 }
 
 
--- Needed for bandwidth limits
-local pitch_bw   = pitchSettings.PITCH_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
-local roll_bw    = rollSettings.ROLL_BANDWIDTH  *globalSettings.GLOBAL_BANDWIDTH_SCALE
-local yaw_bw     = yawSettings.YAW_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
+-- Bandwidth limit lowpasses
+local pitch_bw      = pitchSettings.PITCH_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
+local roll_bw       = rollSettings.ROLL_BANDWIDTH  *globalSettings.GLOBAL_BANDWIDTH_SCALE
+local yaw_bw        = yawSettings.YAW_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
 local forward_bw    = forwardSettings.FORWARD_BANDWIDTH      *globalSettings.GLOBAL_BANDWIDTH_SCALE
 local horizontal_bw = horizontalSettings.HORIZONTAL_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
 local vertical_bw   = verticalSettings.VERTICAL_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
@@ -404,6 +405,12 @@ local lowpass = {
   yaw   = FilterLowPass:new(yaw_tau_lp),
 }
 
+
+-- Look-ahead lowpasses
+local lookahead = {
+  yaw = FilterLowPass:new(lookAheadSettings.SMOOTHING),
+}
+
 -- Precomputed scale factors (doesn't save much time but oh well looks cleaner)
 local horizontal_scale = advancedSettings.HORIZONTAL_SCALE*advancedSettings.POSITION_SCALE
 local vertical_scale   = advancedSettings.VERTICAL_SCALE  *advancedSettings.POSITION_SCALE
@@ -418,7 +425,6 @@ local last_clock = os.clock()
 local lastFrameIndex = ac.getSim().replayCurrentFrame
 
 -- Memory of previous look vectors
-local last_yaw_lookahead = 0
 local last_car_position = nil
 
 -- This is used to more smoothly return the look-ahead angle to center at low speed 
@@ -703,7 +709,7 @@ function script.update(dt, mode, turnMix)
         else
           yaw_track = 0
         end
-          
+
         -- local facingForward = math.pow(math.saturate(math.dot(lookAheadDelta, car.look)), 0.5)
         -- local blendNow = math.lerpInvSat(spline_car_distance, 15, 8) * facingForward
         -- lookAheadBlend = math.applyLag(lookAheadBlend, blendNow, 0.99, dt)
@@ -759,9 +765,13 @@ function script.update(dt, mode, turnMix)
     -- If we allowed it to move infinitely fast, we could do rotations now.
     -- However, we want to limit the speed the head is allowed to rotate to avoid violent shaking
     --ac.debug('test', (angle - last_lookahead_angle)/(lookAheadSettings.MAX_SPEED*dt) )
-    if lookAheadSettings.MAX_SPEED > 0 then
-      yaw_lookahead = last_yaw_lookahead + soft_clip(yaw_lookahead - last_yaw_lookahead, lookAheadSettings.MAX_SPEED*dt)
-    end
+    --if lookAheadSettings.MAX_SPEED > 0 then
+      --yaw_lookahead = last_yaw_lookahead + soft_clip(yaw_lookahead - last_yaw_lookahead, lookAheadSettings.MAX_SPEED*dt)
+    --end
+
+    lookahead.yaw:evolve(dt, yaw_lookahead, lookAheadSettings.MAX_SPEED*dt)
+    --ac.debug('yaw', yaw_lookahead)
+    --ac.debug('yaw2', lookahead.yaw.value)
 
     -- Debug steady rotation.
     -- angle = last_lookahead_angle + 0.1*dt
@@ -772,7 +782,7 @@ function script.update(dt, mode, turnMix)
     -- rotate_about_axis(neck.look, car.up, cos_angle, sin_angle)
     -- rotate_about_axis(neck.side, car.up, cos_angle, sin_angle)
     -- rotate_about_axis(neck.up  , car.up, cos_angle, sin_angle)
-    last_yaw_lookahead = yaw_lookahead
+    --last_yaw_lookahead = yaw_lookahead
 
   end -- LOOK-AHEAD STUFF
 
@@ -802,8 +812,8 @@ function script.update(dt, mode, turnMix)
   rotate_about_axis(neck.side, car.side, cos_angle, sin_angle)
   rotate_about_axis(neck.up  , car.side, cos_angle, sin_angle)
 
-  cos_angle = math.cos(yaw_physics+yaw_lookahead)
-  sin_angle = math.sin(yaw_physics+yaw_lookahead)
+  cos_angle = math.cos(yaw_physics+lookahead.yaw.value)
+  sin_angle = math.sin(yaw_physics+lookahead.yaw.value)
   rotate_about_axis(neck.look, car.up, cos_angle, sin_angle)
   rotate_about_axis(neck.side, car.up, cos_angle, sin_angle)
   rotate_about_axis(neck.up  , car.up, cos_angle, sin_angle)
