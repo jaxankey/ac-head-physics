@@ -73,7 +73,7 @@ local lookAheadSettings = scriptSettings:mapSection('LOOK AHEAD', {
   VR_ENABLE_TRACK = 1,
   MAX_ANGLE   = 90,
   MAX_SPEED   = 1,
-  SMOOTHING   = 0.2,
+  SMOOTHING   = 80,
 })
 
 local effectSettings = scriptSettings:mapSection('EFFECTS', {
@@ -104,6 +104,8 @@ local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   POSITION_SCALE           = 1,
   ROTATION_STEP_LIMIT      = 0.5,
   DISPLACEMENT_STEP_LIMIT  = 0.5,
+
+  MINIMUM_SPEED = 1,
 })
 
 
@@ -139,6 +141,17 @@ function soft_clip(value, max, target)
     return target + max-(x-xmax)*(x-xmax)/(2*max)
   else
     return target - max+(x+xmax)*(x+xmax)/(2*max)
+  end
+end
+
+function soft_zero(x)
+  if x >= 1 then
+      return 1
+  elseif x <= 0.5 then
+      return 0
+  else
+      -- Cubic polynomial: f(x) = -16x^3 + 36x^2 - 24x + 5
+      return -16 * x^3 + 36 * x^2 - 24 * x + 5
   end
 end
 
@@ -408,7 +421,7 @@ local lowpass = {
 
 -- Look-ahead lowpasses
 local lookahead = {
-  yaw = FilterLowPass:new(lookAheadSettings.SMOOTHING),
+  yaw = FilterLowPass:new(lookAheadSettings.SMOOTHING*0.001),
 }
 
 -- Precomputed scale factors (doesn't save much time but oh well looks cleaner)
@@ -457,7 +470,6 @@ function script.update(dt, mode, turnMix)
   -- REUSABLE VARIABLES
   local cos_angle, sin_angle, target, dpitch, droll, dyaw
 
-
   -----------------------------------------------------------------
   -- HEAD PHYSICS
   -- These angles we will eventually become neck rotations away from colinear with the car
@@ -468,7 +480,7 @@ function script.update(dt, mode, turnMix)
 
   -- If we just jumped to a new location, changed cars, or haven't been in the cockpit for awhile, reset stuff.
   -- Note if the framerate of a replay is higher than the rendered rate, it can cause frameIndexChange = 2 or 3
-  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 or frameIndexChange > 3 then -- or car.speedMs < 0.1 then
+  if first_run or car.justJumped or car.index ~= last_car_index or os.clock()-last_clock > 0.1 or frameIndexChange > 3 then
     head.pitch:reset()
     head.roll:reset()
     head.yaw:reset()
@@ -507,9 +519,10 @@ function script.update(dt, mode, turnMix)
     return
   end
 
- 
 
-
+  -- Scale all effects down to zero according to speed below some limit
+  local speed_scale = soft_zero(car.speedKmh/advancedSettings.MINIMUM_SPEED)
+  --ac.debug('scale', speed_scale)
 
   -- DISPLACEMENT PHYSICS
   -- 
@@ -543,20 +556,20 @@ function script.update(dt, mode, turnMix)
     lowpass.x:evolve(dt, head.x.value)
 
     -- Adjust head backwards by the value
-    neck.position:addScaled(car.side, -lowpass.x.value)
+    neck.position:addScaled(car.side, -lowpass.x.value*speed_scale)
   end
   -- Same for the other two DOF
   if verticalSettings.VERTICAL_ENABLED == 1 then
     transient.y:evolve(dt, car.acceleration.y, displacement_step_limit)
     head.y:evolve(dt, 0, vertical_scale*transient.y.value)
     lowpass.y:evolve(dt, head.y.value)
-    neck.position:addScaled(car.up, -lowpass.y.value)
+    neck.position:addScaled(car.up, -lowpass.y.value*speed_scale)
   end
   if forwardSettings.FORWARD_ENABLED == 1 then
     transient.z:evolve(dt, car.acceleration.z, displacement_step_limit)
     head.z:evolve(dt, 0, forward_scale*transient.z.value)
     lowpass.z:evolve(dt, head.z.value)
-    neck.position:addScaled(car.look, -lowpass.z.value)
+    neck.position:addScaled(car.look, -lowpass.z.value*speed_scale)
   end
 
   -- ROTATION PHYSICS, ACCUMULATION APPROACH: Advantage that there is no singularity when pitch = 90 degrees
@@ -581,7 +594,7 @@ function script.update(dt, mode, turnMix)
     lowpass.pitch:evolve(dt, head.pitch.value)
 
     -- Prep for 4: Get the base value to add to the look and side vectors
-    pitch_physics = lowpass.pitch.value * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
+    pitch_physics = lowpass.pitch.value
   end
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
@@ -590,7 +603,7 @@ function script.update(dt, mode, turnMix)
     head.roll.value = head.roll.value + transient.roll:evolve(dt, droll/dt) * dt
     head.roll:evolve(dt, 0, 0)
     lowpass.roll:evolve(dt, head.roll.value)
-    roll_physics = lowpass.roll.value * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics proportion.
+    roll_physics = lowpass.roll.value
   end
 
   -- Yaw dynamics
@@ -612,7 +625,7 @@ function script.update(dt, mode, turnMix)
   -- HORIZON LOCK
 
   -- HORIZON LOCK PITCH
-  local pitch_horizon   = 0
+  local pitch_horizon = 0
   if horizonSettings.HORIZON_PITCH ~= 0 then
 
     --  1. Find the unit vector intersecting the world's ground plane (normal 0,1,0), and car.side with a cross product
@@ -632,7 +645,7 @@ function script.update(dt, mode, turnMix)
   end -- HORIZON LOCK PITCH
 
   -- HORIZON LOCK ROLL
-  local roll_horizon    = 0
+  local roll_horizon = 0
   if horizonSettings.HORIZON_ROLL ~= 0 then
 
     -- Similar to pitch, but use car.look instead of car.side to rotate
@@ -662,7 +675,7 @@ function script.update(dt, mode, turnMix)
 
     -- Calculate the track follow and drift angles only if we're moving fast enough and there
     -- wasn't some weird glitch.
-    if car.speedMs > 1 and (car.position - last_car_position):lengthSquared() > 1e-20 then
+    --if car.speedMs > 1 and (car.position - last_car_position):lengthSquared() > 1e-20 then
 
       -- DRIFT
       if lookAheadSettings.DRIFT_SCALE ~= 0 and (not vr_enabled or (vr_enabled and lookAheadSettings.VR_ENABLE_DRIFT==1)) then
@@ -735,20 +748,20 @@ function script.update(dt, mode, turnMix)
       -- end -- Otherwise angle is zero.
 
       -- Man, this just has the fewest confusing discontinuities of anything I tried.
-      yaw_drift_track = yaw_drift + yaw_track
+      yaw_drift_track = (yaw_drift + yaw_track)*speed_scale
 
       -- Keep track of the velocity and value for smoother return to center
       --lookahead_drift_track.velocity = (yaw_drift_track - lookahead_drift_track.value)/dt
       --lookahead_drift_track.value = yaw_drift_track
 
     -- If we're going below the threshold speed, have things relax back to centered.
-    else
+    --else
       -- Critically damped decay
-      yaw_drift_track = lookahead_drift_track:evolve(dt,0,0)
+    --  yaw_drift_track = lookahead_drift_track:evolve(dt,0,0)
 
       -- Exponential decay
       --yaw_drift_track = last_yaw_drift_track * (1-dt/0.25)
-    end
+    --end
     --last_yaw_drift_track = yaw_drift_track -- for the decay stuff
 
     -- COMBINE WITH STEER (added even if stopped!) to get the total angle
@@ -802,10 +815,22 @@ function script.update(dt, mode, turnMix)
   end
 
   ------------------------------------------------------------------
+  -- SOFT ZERO FOR ROTATION ANGLES
+  pitch_physics = speed_scale*pitch_physics * (1-horizonSettings.HORIZON_PITCH) -- When horizon lock is enabled, decrease the physics in proportion
+  roll_physics  = speed_scale*roll_physics  * (1-horizonSettings.HORIZON_ROLL) -- When horizon lock is enabled, decrease the physics in proportion
+  yaw_physics   = speed_scale*yaw_physics
+  --pitch_horizon shouldn't scale down
+  --roll_horizon shouldn't scale down
+  --lookahead.yaw.value handled above
+
+
+
+  ------------------------------------------------------------------
   -- FINAL ROTATIONS
   -- Do all the combined rotations once to save CPU
   local pitch = pitch_physics+pitch_horizon
-              - math.dot(car.acceleration, car.look) * gear_bucker.value*effectSettings.GEAR_BUCK_PITCH*2*rpm_gas_scale
+              - math.dot(car.acceleration, car.look) 
+              * gear_bucker.value*effectSettings.GEAR_BUCK_PITCH*2*rpm_gas_scale
   cos_angle = math.cos(pitch)
   sin_angle = math.sin(pitch)
   rotate_about_axis(neck.look, car.side, cos_angle, sin_angle)
