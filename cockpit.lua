@@ -3,7 +3,7 @@ local scriptSettings = ac.INIConfig.scriptSettings()
 local globalSettings = scriptSettings:mapSection('GLOBAL ADJUSTMENTS', {
   FREQUENCY_SCALE = 1,
   DAMPING_SCALE   = 1.0,
-  BANDWIDTH_SCALE = 0.0,
+  BANDWIDTH = 0.0,
   THRESHOLD_SPEED   = 3,
   FULL_EFFECT_SPEED = 10,
 })
@@ -14,7 +14,6 @@ local pitchSettings = scriptSettings:mapSection('PITCH PHYSICS', {
   PITCH_DAMPING   = 1.0,
   PITCH_LIMIT     = 30, -- degrees
   PITCH_TRACKING  = 1,
-  PITCH_BANDWIDTH = 20,
 })
 local rollSettings = scriptSettings:mapSection('ROLL PHYSICS', {
   ROLL_ENABLED    = 1,
@@ -22,7 +21,6 @@ local rollSettings = scriptSettings:mapSection('ROLL PHYSICS', {
   ROLL_DAMPING    = 1.0,
   ROLL_LIMIT      = 30, -- degrees
   ROLL_TRACKING   = 0,
-  ROLL_BANDWIDTH  = 20,
 })
 local yawSettings = scriptSettings:mapSection('YAW PHYSICS', {
   YAW_ENABLED     = 0,
@@ -30,7 +28,6 @@ local yawSettings = scriptSettings:mapSection('YAW PHYSICS', {
   YAW_DAMPING     = 1,
   YAW_LIMIT       = 30, -- degrees
   YAW_TRACKING    = 1,
-  YAW_BANDWIDTH   = 20,
 })
 
 local forwardSettings = scriptSettings:mapSection('FORWARD PHYSICS', {
@@ -38,7 +35,6 @@ local forwardSettings = scriptSettings:mapSection('FORWARD PHYSICS', {
   FORWARD_FREQUENCY    = 0.8,  -- Resonance frequency (Hz); lower for more smoothing
   FORWARD_DAMPING      = 1.0,  -- Damping parameter for head movement. 1 is critically damped (exponential decay), below one oscillates
   FORWARD_LIMIT        = 0.25, -- Maximum head deviation from front-back G-forces (meters). Also adds some nonlinear spring.
-  FORWARD_BANDWIDTH    = 20,
 })
 
 local horizontalSettings = scriptSettings:mapSection('HORIZONTAL PHYSICS', {
@@ -46,7 +42,6 @@ local horizontalSettings = scriptSettings:mapSection('HORIZONTAL PHYSICS', {
   HORIZONTAL_FREQUENCY = 1.3,
   HORIZONTAL_DAMPING   = 1.0,
   HORIZONTAL_LIMIT     = 0.12,
-  HORIZONTAL_BANDWIDTH = 20,
 })
 
 local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
@@ -54,7 +49,6 @@ local verticalSettings = scriptSettings:mapSection('VERTICAL PHYSICS', {
   VERTICAL_FREQUENCY   = 1,
   VERTICAL_DAMPING     = 1.0,
   VERTICAL_LIMIT       = 0.14,
-  VERTICAL_BANDWIDTH   = 20,
 })
 
 local horizonSettings = scriptSettings:mapSection('HORIZON LOCK', {
@@ -404,34 +398,17 @@ local transient = {
 
 
 -- Bandwidth limit lowpasses
-local pitch_bw      = pitchSettings.PITCH_BANDWIDTH*globalSettings.BANDWIDTH_SCALE
-local roll_bw       = rollSettings.ROLL_BANDWIDTH  *globalSettings.BANDWIDTH_SCALE
-local yaw_bw        = yawSettings.YAW_BANDWIDTH    *globalSettings.BANDWIDTH_SCALE
-local forward_bw    = forwardSettings.FORWARD_BANDWIDTH      *globalSettings.BANDWIDTH_SCALE
-local horizontal_bw = horizontalSettings.HORIZONTAL_BANDWIDTH*globalSettings.BANDWIDTH_SCALE
-local vertical_bw   = verticalSettings.VERTICAL_BANDWIDTH    *globalSettings.BANDWIDTH_SCALE
---
-local pitch_tau_lp = 0
-local roll_tau_lp  = 0
-local yaw_tau_lp   = 0
-local forward_tau_lp    = 0
-local horizontal_tau_lp = 0
-local vertical_tau_lp   = 0
-if pitch_bw > 0 then pitch_tau_lp = 1/(2*pi*pitch_bw) end
-if roll_bw  > 0 then roll_tau_lp  = 1/(2*pi*roll_bw)  end
-if yaw_bw   > 0 then yaw_tau_lp   = 1/(2*pi*yaw_bw)   end
-if forward_bw    > 0 then forward_tau_lp    = 1/(2*pi*forward_bw)    end
-if horizontal_bw > 0 then horizontal_tau_lp = 1/(2*pi*horizontal_bw) end
-if vertical_bw   > 0 then vertical_tau_lp   = 1/(2*pi*vertical_bw)   end
+local tau_lp = 0
+if globalSettings.BANDWIDTH > 0 then tau_lp = 1/(2*pi*globalSettings.BANDWIDTH) end
 --
 -- Low-pass filters for bandwidth limitations
 local lowpass = {
-  x     = FilterLowPass:new(horizontal_tau_lp),
-  y     = FilterLowPass:new(vertical_tau_lp),
-  z     = FilterLowPass:new(forward_tau_lp),
-  pitch = FilterLowPass:new(pitch_tau_lp),
-  roll  = FilterLowPass:new(roll_tau_lp),
-  yaw   = FilterLowPass:new(yaw_tau_lp),
+  x     = FilterLowPass:new(tau_lp),
+  y     = FilterLowPass:new(tau_lp),
+  z     = FilterLowPass:new(tau_lp),
+  pitch = FilterLowPass:new(tau_lp),
+  roll  = FilterLowPass:new(tau_lp),
+  yaw   = FilterLowPass:new(tau_lp),
 }
 
 
