@@ -1,9 +1,11 @@
 local scriptSettings = ac.INIConfig.scriptSettings()
 
 local globalSettings = scriptSettings:mapSection('GLOBAL ADJUSTMENTS', {
-  GLOBAL_FREQUENCY_SCALE = 1,
-  GLOBAL_DAMPING_SCALE   = 1.0,
-  GLOBAL_BANDWIDTH_SCALE = 0.0,
+  FREQUENCY_SCALE = 1,
+  DAMPING_SCALE   = 1.0,
+  BANDWIDTH_SCALE = 0.0,
+  THRESHOLD_SPEED   = 3,
+  FULL_EFFECT_SPEED = 10,
 })
 
 local pitchSettings = scriptSettings:mapSection('PITCH PHYSICS', {
@@ -104,8 +106,6 @@ local advancedSettings = scriptSettings:mapSection('ADVANCED PARAMETERS', {
   POSITION_SCALE           = 1,
   ROTATION_STEP_LIMIT      = 0.5,
   DISPLACEMENT_STEP_LIMIT  = 0.5,
-
-  MINIMUM_SPEED = 1,
 })
 
 
@@ -144,16 +144,32 @@ function soft_clip(value, max, target)
   end
 end
 
-function soft_zero(x)
+function soft_zero(x, zero_point)
+  -- Default zero_point to 0.5 if not provided
+  zero_point = zero_point or 0.5
+
   if x >= 1 then
       return 1
-  elseif x <= 0.5 then
+  elseif x <= zero_point then
       return 0
   else
-      -- Cubic polynomial: f(x) = -16x^3 + 36x^2 - 24x + 5
-      return -16 * x^3 + 36 * x^2 - 24 * x + 5
+      -- Scale x to work with any zero_point
+      local t = (x - zero_point)/(1 - zero_point)
+      -- Use simple polynomial on scaled input
+      return -2 * t*t*t + 3 * t*t
   end
 end
+
+-- function soft_zero(x)
+--   if x >= 1 then
+--       return 1
+--   elseif x <= 0.5 then
+--       return 0
+--   else
+--       -- Cubic polynomial: f(x) = -16x^3 + 36x^2 - 24x + 5
+--       return -16 * x^3 + 36 * x^2 - 24 * x + 5
+--   end
+-- end
 
 -- Increases to the max value then returns the max
 -- works in +/- directions.
@@ -196,8 +212,8 @@ function FilterSpring:new(frequency, damping, limit)
     local instance = setmetatable({}, { __index = FilterSpring })
 
     -- Initialization
-    instance.frequency = math.min(frequency*globalSettings.GLOBAL_FREQUENCY_SCALE, 9.7) -- Keep the frequency below 10 Hz to avoid artifacts (still may be some at low frame rate)
-    instance.damping   = math.min(damping  *globalSettings.GLOBAL_DAMPING_SCALE  , 1.0) -- Damping above 1 causes weirdness.
+    instance.frequency = math.min(frequency*globalSettings.FREQUENCY_SCALE, 9.7) -- Keep the frequency below 10 Hz to avoid artifacts (still may be some at low frame rate)
+    instance.damping   = math.min(damping  *globalSettings.DAMPING_SCALE  , 1.0) -- Damping above 1 causes weirdness.
     if limit then instance.limit = limit end
 
     return instance
@@ -388,12 +404,12 @@ local transient = {
 
 
 -- Bandwidth limit lowpasses
-local pitch_bw      = pitchSettings.PITCH_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
-local roll_bw       = rollSettings.ROLL_BANDWIDTH  *globalSettings.GLOBAL_BANDWIDTH_SCALE
-local yaw_bw        = yawSettings.YAW_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
-local forward_bw    = forwardSettings.FORWARD_BANDWIDTH      *globalSettings.GLOBAL_BANDWIDTH_SCALE
-local horizontal_bw = horizontalSettings.HORIZONTAL_BANDWIDTH*globalSettings.GLOBAL_BANDWIDTH_SCALE
-local vertical_bw   = verticalSettings.VERTICAL_BANDWIDTH    *globalSettings.GLOBAL_BANDWIDTH_SCALE
+local pitch_bw      = pitchSettings.PITCH_BANDWIDTH*globalSettings.BANDWIDTH_SCALE
+local roll_bw       = rollSettings.ROLL_BANDWIDTH  *globalSettings.BANDWIDTH_SCALE
+local yaw_bw        = yawSettings.YAW_BANDWIDTH    *globalSettings.BANDWIDTH_SCALE
+local forward_bw    = forwardSettings.FORWARD_BANDWIDTH      *globalSettings.BANDWIDTH_SCALE
+local horizontal_bw = horizontalSettings.HORIZONTAL_BANDWIDTH*globalSettings.BANDWIDTH_SCALE
+local vertical_bw   = verticalSettings.VERTICAL_BANDWIDTH    *globalSettings.BANDWIDTH_SCALE
 --
 local pitch_tau_lp = 0
 local roll_tau_lp  = 0
@@ -521,7 +537,11 @@ function script.update(dt, mode, turnMix)
 
 
   -- Scale all effects down to zero according to speed below some limit
-  local speed_scale = soft_zero(car.speedKmh/advancedSettings.MINIMUM_SPEED)
+  local speed_scale = 1
+  if globalSettings.FULL_EFFECT_SPEED > 0 then
+    speed_scale = soft_zero(car.speedKmh/globalSettings.FULL_EFFECT_SPEED, globalSettings.THRESHOLD_SPEED/globalSettings.FULL_EFFECT_SPEED)
+  end
+
   --ac.debug('scale', speed_scale)
 
   -- DISPLACEMENT PHYSICS
