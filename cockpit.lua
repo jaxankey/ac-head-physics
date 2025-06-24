@@ -821,7 +821,6 @@ function script.update(dt, mode, turnMix)
   --lookahead.yaw.value handled above
 
 
-
   ------------------------------------------------------------------
   -- FINAL ROTATIONS
   -- Do all the combined rotations once to save CPU
