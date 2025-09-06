@@ -596,6 +596,7 @@ function script.update(dt, mode, turnMix)
 
   -- Roll dynamics: Evolve toward the car's side.y (vertical) value, and add the difference
   if rollSettings.ROLL_ENABLED == 1 then
+    -- (See pitch for methodology comments)
     droll = math.dot(math.cross(car.up, last_car_up), car.look)
     head.roll.value = head.roll.value + transient.roll:evolve(dt, droll/dt) * dt
     head.roll:evolve(dt, 0, 0)
